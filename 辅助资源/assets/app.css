@@ -231,6 +231,19 @@ main { padding: 16px 22px 40px; }
 .mode-bar .queue { color: var(--muted); font-size: 13px; }
 .mode-bar .current-pick { font-size: 20px; font-weight: 800; }
 
+/* ---------- 标注性别 ---------- */
+.segmented.brush button { padding: 5px 14px; font-weight: 700; }
+.segmented.brush button.b-f { color: var(--female); }
+.segmented.brush button.b-m { color: var(--male); }
+.segmented.brush button.b-f.active { background: var(--female); color: #fff; }
+.segmented.brush button.b-m.active { background: var(--male); color: #fff; }
+.mode-bar b.g-m { color: var(--male); }
+.mode-bar b.g-f { color: var(--female); }
+.gender-mode .seat.g-u:not(.empty):not(.void) { background: var(--warn-bg); border: 1px dashed #f59e0b; }
+.roster-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; --seat-font: 17px; }
+.roster-grid .seat { min-height: 54px; }
+.legend button.link { border: 0; background: none; padding: 0; color: #b45309; font-weight: 700; font-size: 13px; text-decoration: underline; cursor: pointer; }
+
 /* ---------- 课堂记分 ---------- */
 .scoring-bar { margin-top: 12px; padding: 12px 14px; border: 2px solid #fca5a5; border-radius: 12px; background: #fff7f7; }
 .scoring-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

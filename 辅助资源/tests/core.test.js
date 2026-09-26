@@ -229,6 +229,23 @@ test('姓名与性别规范化', () => {
   assert.equal(names.get('a3'), '钱测一');
 });
 
+test('标注性别：画笔标注，再点同一性别取消；剩余反标只改未标注的在班学生', () => {
+  assert.equal(core.applyGenderBrush('', 'F'), 'F');
+  assert.equal(core.applyGenderBrush('M', 'F'), 'F', '标错了直接改');
+  assert.equal(core.applyGenderBrush('F', 'F'), '', '再点一次取消');
+  assert.equal(core.applyGenderBrush('M', 'M'), '');
+  const students = [
+    { id: 'a', name: '赵测一', gender: 'F' },
+    { id: 'b', name: '钱测一', gender: '' },
+    { id: 'c', name: '孙测一', gender: 'M' },
+    { id: 'd', name: '李测一', gender: '' },
+    { id: 'e', name: '周测一', gender: '', active: false }
+  ];
+  assert.deepEqual(core.fillRemainingGender(students, 'F'), [{ sid: 'b', gender: 'M' }, { sid: 'd', gender: 'M' }]);
+  assert.deepEqual(core.fillRemainingGender(students, 'M'), [{ sid: 'b', gender: 'F' }, { sid: 'd', gender: 'F' }]);
+  assert.deepEqual(core.fillRemainingGender(students, ''), []);
+});
+
 test('课堂表现汇总与默认表现项', () => {
   const items = core.normalizeItems(core.DEFAULT_SCORE_ITEMS);
   assert.equal(items.length, 14);

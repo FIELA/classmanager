@@ -47,6 +47,7 @@
     scoring: null,
     adjust: null,
     select: null,
+    gender: null,
     layoutDraft: null,
     itemsDraft: null,
     importCands: []
@@ -503,7 +504,7 @@
       if (w && w.plus) tags += `<span class="tag-plus">+${w.plus}</span>`;
       if (w && w.minus) tags += `<span class="tag-minus">-${w.minus}</span>`;
     }
-    const title = `${name} · ${core.seatLabel(r, c)}${pinned ? ' · 已固定' : ''}`;
+    const title = `${name}${r ? ` · ${core.seatLabel(r, c)}` : ''}${pinned ? ' · 已固定' : ''}`;
     return `<div class="${cls.join(' ')}" data-r="${r}" data-c="${c}" data-sid="${esc(sid)}" title="${esc(title)}">` +
       `${drawIdx !== undefined ? `<span class="draw-no">${drawIdx + 1}</span>` : ''}${pinned ? '<span class="pin" aria-label="已固定">📌</span>' : ''}` +
       `<b class="seat-name">${esc(name)}</b>${tags ? `<span class="tags">${tags}</span>` : ''}</div>`;
@@ -715,8 +716,19 @@
       const all = store.studentsOf(cls);
       const cm = all.filter(s => s.gender === 'M').length;
       const cf = all.filter(s => s.gender === 'F').length;
-      html = `<span class="mode-tag">标注性别</span><span class="mode-msg">点学生切换：未标注 → 男（蓝）→ 女（红）→ 未标注。男 ${cm} · 女 ${cf} · 未标注 ${all.length - cm - cf}</span>
-        <button type="button" data-act="mode-done" class="primary">完成</button>`;
+      const G = S.gender;
+      const rest = core.fillRemainingGender(all, G.brush).length;
+      const other = G.brush === 'F' ? '男生' : '女生';
+      html = `<span class="mode-tag">标注性别</span>
+        <span>点学生标为</span>
+        <div class="segmented brush" role="group" aria-label="标为">
+          <button type="button" data-act="brush-F" class="b-f ${G.brush === 'F' ? 'active' : ''}" aria-pressed="${G.brush === 'F'}">♀ 女生</button>
+          <button type="button" data-act="brush-M" class="b-m ${G.brush === 'M' ? 'active' : ''}" aria-pressed="${G.brush === 'M'}">♂ 男生</button>
+        </div>
+        <span class="mode-msg muted">再点一次可取消 · 男 <b class="g-m">${cm}</b> · 女 <b class="g-f">${cf}</b> · 未标注 <b>${all.length - cm - cf}</b></span>
+        ${rest ? `<button type="button" data-act="fill-rest" class="primary">剩余 ${rest} 人标为${other}</button>` : ''}
+        <button type="button" data-act="gender-undo" ${G.undo.length ? '' : 'disabled'}>↶ 撤销</button>
+        <button type="button" data-act="mode-done">完成</button>`;
     } else if (m === 'select') {
       const X = S.select;
       if (X.idx < X.order.length) {
@@ -772,7 +784,9 @@
     el.innerHTML = [
       `<span class="lg g-m">男 ${cm}</span>`,
       `<span class="lg g-f">女 ${cf}</span>`,
-      cm + cf < all.length ? `<span class="lg">未标注性别 ${all.length - cm - cf}</span>` : '',
+      cm + cf < all.length
+        ? (S.ui.mode ? `<span class="lg">未标注性别 ${all.length - cm - cf}</span>` : `<button type="button" class="link" data-act="gender-start">未标注性别 ${all.length - cm - cf} · 去标注</button>`)
+        : '',
       rec ? `<span>空座 ${cap - rec.seats.length}</span>` : '',
       cls.pins.length ? '<span>📌 固定座位</span>' : '',
       '<span>第 1 排靠近讲台</span>',
@@ -790,13 +804,20 @@
   function renderSeatMap(cls, rec) {
     const map = $('seat-map');
     map.classList.toggle('clickable', !!S.ui.mode);
+    map.classList.toggle('gender-mode', S.ui.mode === 'gender');
     if (!cls) { map.innerHTML = ''; $('seat-notes').innerHTML = ''; return; }
+    const { byId, names } = studentMaps(cls);
     if (!rec) {
-      map.innerHTML = '<div class="notes"><p>还没有座次表。</p></div>';
       $('seat-notes').innerHTML = '';
+      if (S.ui.mode === 'gender') {
+        const ctx0 = { byId, names, drawn: new Map(), pins: new Map(), mode: 'gender' };
+        map.innerHTML = '<p class="hint">还没有座次表，按名单顺序显示：</p><div class="roster-grid">' +
+          store.studentsOf(cls).map(s => seatHTML(0, 0, s.id, ctx0)).join('') + '</div>';
+      } else {
+        map.innerHTML = '<div class="notes"><p>还没有座次表。</p></div>';
+      }
       return;
     }
-    const { byId, names } = studentMaps(cls);
     const drawn = new Map();
     if (S.draw.resultClass === cls.id) S.draw.result.forEach((id, i) => drawn.set(id, i));
     const pins = new Map(cls.pins.map(p => [p.sid, core.seatKey(p.r, p.c)]));
@@ -846,7 +867,7 @@
     $('btn-finalize').disabled = busy || !rec || rec.kind !== 'draft';
     $('btn-export-seat').disabled = !rec || rec.kind === 'select';
     $('btn-pin-mode').disabled = !rec || (busy && S.ui.mode !== 'pin');
-    $('btn-gender-mode').disabled = !rec || (busy && S.ui.mode !== 'gender');
+    $('btn-gender-mode').disabled = !cls || !cls.students.size || (busy && S.ui.mode !== 'gender');
     $('pin-summary').textContent = cls ? (cls.pins.length ? `已固定 ${cls.pins.length} 人。` : '还没有固定的学生。') : '';
   }
 
@@ -891,6 +912,7 @@
     S.ui.mode = null;
     S.adjust = null;
     S.select = null;
+    S.gender = null;
     if (!silent) renderAll();
   }
 
@@ -902,7 +924,7 @@
     const sid = el.dataset.sid || null;
     if (S.ui.mode === 'adjust') onSwapClick(r, c);
     else if (S.ui.mode === 'pin' && sid) togglePin(sid, r, c);
-    else if (S.ui.mode === 'gender' && sid) cycleGender(sid);
+    else if (S.ui.mode === 'gender' && sid) paintGender(sid);
     else if (S.ui.mode === 'select' && !sid) placePick(r, c);
     else if (S.ui.mode === 'scoring' && sid) toggleScoreSel(sid);
   }
@@ -1072,6 +1094,13 @@
         commit('pins.set', { classId: cls.id, pins: [] });
         renderSeating();
       }
+    } else if (act === 'brush-F' || act === 'brush-M') {
+      S.gender.brush = act === 'brush-F' ? 'F' : 'M';
+      renderModeBar(cls);
+    } else if (act === 'fill-rest') {
+      fillRestGender();
+    } else if (act === 'gender-undo') {
+      undoGender();
     } else if (act === 'mode-done') {
       exitMode();
     }
@@ -1153,13 +1182,61 @@
     renderSeating();
   }
 
-  function cycleGender(sid) {
+  function startGender() {
+    const cls = currentClass();
+    if (!cls || !cls.students.size) { showError('本班还没有学生'); return; }
+    if (S.ui.mode && S.ui.mode !== 'gender') exitMode(true);
+    S.ui.tab = 'seating';
+    S.ui.mode = 'gender';
+    S.gender = { brush: 'F', undo: [] };
+    clearDraw();
+    renderAll();
+    $('mode-bar').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  // 批量改性别，并记下原来的值以便撤销
+  function setGenders(cls, changes, label) {
+    const undo = [];
+    changes.forEach(ch => {
+      const s = cls.students.get(ch.sid);
+      if (!s || s.gender === ch.gender) return;
+      undo.push({ sid: ch.sid, gender: s.gender });
+      commit('student.upsert', { classId: cls.id, studentId: ch.sid, fields: { gender: ch.gender } }, { noFlush: true });
+    });
+    if (undo.length) {
+      S.gender.undo.push({ label, changes: undo });
+      scheduleFlush();
+    }
+    return undo.length;
+  }
+
+  function paintGender(sid) {
     const cls = currentClass();
     const s = cls.students.get(sid);
     if (!s) return;
-    const next = s.gender === '' ? 'M' : s.gender === 'M' ? 'F' : '';
-    commit('student.upsert', { classId: cls.id, studentId: sid, fields: { gender: next } });
+    setGenders(cls, [{ sid, gender: core.applyGenderBrush(s.gender, S.gender.brush) }], s.name);
     renderSeating();
+  }
+
+  function fillRestGender() {
+    const cls = currentClass();
+    const list = core.fillRemainingGender(store.studentsOf(cls), S.gender.brush);
+    if (!list.length) return;
+    const text = list[0].gender === 'M' ? '男生' : '女生';
+    if (!confirm(`把剩余 ${list.length} 名未标注性别的学生都标为${text}吗？（可以撤销）`)) return;
+    const n = setGenders(cls, list, `剩余 ${list.length} 人标为${text}`);
+    renderSeating();
+    toast(`已把 ${n} 人标为${text}`);
+  }
+
+  function undoGender() {
+    const cls = currentClass();
+    const last = S.gender.undo.pop();
+    if (!last) return;
+    last.changes.forEach(ch => commit('student.upsert', { classId: cls.id, studentId: ch.sid, fields: { gender: ch.gender } }, { noFlush: true }));
+    scheduleFlush();
+    renderSeating();
+    toast(`已撤销：${last.label}`);
   }
 
   // —— 定版与导出 ——
@@ -1905,7 +1982,9 @@
       if (rec) exportSeating(cls, rec);
     });
     $('btn-pin-mode').addEventListener('click', () => { if (S.ui.mode === 'pin') exitMode(); else { S.ui.mode = 'pin'; clearDraw(); renderAll(); } });
-    $('btn-gender-mode').addEventListener('click', () => { if (S.ui.mode === 'gender') exitMode(); else { S.ui.mode = 'gender'; clearDraw(); renderAll(); } });
+    $('btn-gender-mode').addEventListener('click', () => { if (S.ui.mode === 'gender') exitMode(); else startGender(); });
+    $('seat-legend').addEventListener('click', e => { if (e.target.closest('[data-act="gender-start"]')) startGender(); });
+    $('btn-gender-quick').addEventListener('click', startGender);
 
     // 课堂表现
     $('scores-week').addEventListener('change', e => { S.ui.scoresWeek = e.target.value; S.ui.scoresStudent = null; renderScores(); });

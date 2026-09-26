@@ -335,6 +335,19 @@
 
   const GENDER_TEXT = { M: '男', F: '女', '': '' };
 
+  // 标注性别用“画笔”：点学生标为画笔的性别；已是这个性别再点一次则取消
+  function applyGenderBrush(current, brush) {
+    if (brush !== 'M' && brush !== 'F') return current || '';
+    return current === brush ? '' : brush;
+  }
+
+  // 剩余反标：还没标注的在班学生，一律标为画笔的相反性别
+  function fillRemainingGender(students, brush) {
+    const target = brush === 'F' ? 'M' : brush === 'M' ? 'F' : null;
+    if (!target) return [];
+    return (students || []).filter(s => s && s.active !== false && !s.gender).map(s => ({ sid: s.id, gender: target }));
+  }
+
   function activeStudents(students) {
     return (students || []).filter(s => s && s.active !== false);
   }
@@ -698,7 +711,7 @@
     ROW_ZONES, rowZoneIndex, rowZone, colZone, zoneOf, fillOrder, deskmatePairs, displayColumns, displayRows,
     defaultLayoutFor, seatLabel,
     // 学生
-    normalizeName, normalizeGender, GENDER_TEXT, activeStudents, compareRoster, rankStudents, displayNames,
+    normalizeName, normalizeGender, GENDER_TEXT, applyGenderBrush, fillRemainingGender, activeStudents, compareRoster, rankStudents, displayNames,
     // 排座
     seatsToMap, mapToSeats, sanitizePins, randomSeating, scoreSeating, defaultRotation, rotateSeating, holdSeating,
     placeLeftovers, validateSeats,
