@@ -1,0 +1,3 @@
+#!/bin/sh
+# 推送前再查一次：待推送的每个提交都不得含真实数据
+exec node "$(git rev-parse --show-toplevel)/辅助资源/tools/check-no-real-data.js" --push

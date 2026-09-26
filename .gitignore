@@ -1,0 +1,39 @@
+# 本仓库是公开的：学生名单、成绩、座次、记分等真实数据一律不入库。
+# 采用“白名单”写法：根目录下默认全部忽略，只放行程序与文档。
+
+/*
+!/.gitignore
+!/.githooks/
+!/README.md
+!/AGENTS.md
+!/CLAUDE.md
+!/座次管理.html
+!/辅助资源/
+
+# 真实数据目录（再写一遍，防止白名单被误改）
+/数据/
+/导出/
+
+# 任何表格、数据文件：测试数据在测试中临时生成，不落盘
+*.xlsx
+*.xls
+*.xlsm
+*.et
+*.csv
+*.jsonl
+*.numbers
+
+# Office / WPS / 浏览器临时文件
+~$*
+.~lock*
+*.crswap
+
+# 系统文件
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# 本地工具与日志
+node_modules/
+*.log

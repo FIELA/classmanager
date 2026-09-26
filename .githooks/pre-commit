@@ -1,0 +1,3 @@
+#!/bin/sh
+# 禁止把真实数据提交进公开仓库（检查规则见 辅助资源/tools/check-no-real-data.js）
+exec node "$(git rev-parse --show-toplevel)/辅助资源/tools/check-no-real-data.js" --staged

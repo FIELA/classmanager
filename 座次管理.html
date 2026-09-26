@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>班级座次管理</title>
+  <link rel="stylesheet" href="辅助资源/assets/app.css">
+  <script src="辅助资源/assets/exceljs.min.js"></script>
+  <script src="辅助资源/assets/core.js"></script>
+  <script src="辅助资源/assets/store.js"></script>
+  <script src="辅助资源/assets/excel.js"></script>
+  <script src="辅助资源/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">班级座次<span>座次 · 抽取 · 课堂表现</span></div>
+    <div class="class-switch">
+      <label for="class-select">班级</label>
+      <select id="class-select" aria-label="切换班级"></select>
+    </div>
+    <nav class="tabs" aria-label="功能">
+      <button type="button" data-tab="seating" class="active">座次</button>
+      <button type="button" data-tab="scores">课堂表现</button>
+      <button type="button" data-tab="student">学生轨迹</button>
+      <button type="button" data-tab="settings">班级设置</button>
+    </nav>
+    <div class="header-actions">
+      <span id="today-tag" class="today-tag"></span>
+      <button type="button" id="save-status" class="save-status" title="保存状态"></button>
+      <button type="button" id="btn-folder" class="btn-folder">📂 连接文件夹</button>
+      <button type="button" id="btn-refresh" class="quiet" title="重新读取文件夹里的记录和 Excel">↻ 刷新</button>
+    </div>
+  </header>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="alerts" class="alerts" aria-live="polite"></div>
+
+  <main>
+    <!-- 未连接文件夹时的引导 -->
+    <section id="welcome" class="panel" hidden>
+      <article class="paper welcome">
+        <h1>班级座次管理</h1>
+        <p class="lead">数据保存在“座次2”文件夹里（U 盘或电脑上都可以），网页本身不联网、不上传任何内容。</p>
+        <div id="welcome-body"></div>
+        <ol class="steps">
+          <li>点上方或下面的 <b>连接文件夹</b>，选择 <b>座次2</b> 文件夹（里面有“座次管理.html”）。</li>
+          <li>浏览器问“是否允许编辑”时点 <b>允许</b>。在新电脑上每次打开都需要这样授权一次。</li>
+          <li>连接后即可查看座次、随机抽取、课堂记分；所有修改直接保存到这个文件夹。</li>
+        </ol>
+        <button type="button" id="btn-welcome-connect" class="primary big">📂 连接文件夹</button>
+      </article>
+    </section>
+
+    <!-- 1. 座次 -->
+    <section id="panel-seating" class="panel" hidden>
+      <article class="paper" id="seat-paper">
+        <div class="paper-head">
+          <div class="paper-head-left">
+            <div class="title-row">
+              <h2 id="seat-title">座次表</h2>
+              <span id="seat-badges"></span>
+            </div>
+            <p id="seat-meta" class="meta"></p>
+          </div>
+          <div class="paper-head-actions">
+            <div class="segmented" role="group" aria-label="视角">
+              <button type="button" id="view-student" class="active" aria-pressed="true">学生版</button>
+              <button type="button" id="view-teacher" aria-pressed="false">教师版</button>
+            </div>
+            <button type="button" id="btn-scoring" class="btn-scoring">★ 课堂记分</button>
+          </div>
+        </div>
+
+        <div class="draw-bar" id="draw-bar">
+          <span class="bar-label">随机抽取</span>
+          <div class="chips" id="draw-chips" role="group" aria-label="抽取人数"></div>
+          <label class="custom-n">自定义 <input id="draw-custom" type="number" min="1" step="1" inputmode="numeric" aria-label="自定义人数"> 人</label>
+          <button type="button" id="btn-draw" class="primary">🎲 抽取</button>
+          <button type="button" id="btn-draw-clear" class="quiet">清除</button>
+          <label class="check"><input type="checkbox" id="draw-norepeat"> 本节课不重复</label>
+          <span id="draw-info" class="muted"></span>
+        </div>
+        <div id="draw-result" class="draw-result" hidden></div>
+
+        <div id="mode-bar" class="mode-bar" hidden></div>
+
+        <div id="scoring-bar" class="scoring-bar" hidden>
+          <div class="scoring-head">
+            <span class="scoring-badge">★ 课堂记分</span>
+            <span class="scoring-hint">选一个表现项 → 在座次表中点选 1 名或多名学生 → 确认记分</span>
+            <span class="spacer"></span>
+            <button type="button" id="btn-score-all" class="quiet small">全选本班</button>
+            <button type="button" id="btn-score-none" class="quiet small">清空选择</button>
+            <button type="button" id="btn-score-undo" class="quiet small">↶ 撤销上一次</button>
+            <button type="button" id="btn-score-confirm" class="primary">✓ 确认记分</button>
+            <button type="button" id="btn-score-exit" class="quiet small">✕ 退出记分</button>
+          </div>
+          <div class="score-rows" id="score-rows">
+            <div class="score-row"><span class="row-tag bonus">加分项</span><div id="items-bonus" class="item-group"></div></div>
+            <div class="score-row"><span class="row-tag penalty">扣分项</span><div id="items-penalty-1" class="item-group"></div></div>
+            <div class="score-row"><span class="row-tag penalty ghost" aria-hidden="true">扣分项</span><div id="items-penalty-2" class="item-group"></div></div>
+          </div>
+          <div class="scoring-status">
+            <label>记分日期 <input type="date" id="score-date"></label>
+            <span id="score-date-warn" class="warn-text"></span>
+            <span class="sep">·</span>
+            <span>表现项：<b id="score-item-name">未选择</b></span>
+            <span class="sep">·</span>
+            <span>已选 <b id="score-count">0</b> 人 <span id="score-names" class="muted"></span></span>
+          </div>
+        </div>
+
+        <div class="legend" id="seat-legend"></div>
+        <div id="seat-map" class="seat-map"></div>
+        <div id="seat-notes" class="notes"></div>
+      </article>
+
+      <details class="tools" id="seat-tools">
+        <summary>排座工具：生成新座次 · 固定学生 · 微调 · 定版 · 导出</summary>
+        <div class="tools-grid">
+          <section class="tool-card">
+            <h3>生成新座次</h3>
+            <div class="field">
+              <label for="gen-method">方式</label>
+              <select id="gen-method">
+                <option value="random">随机排座</option>
+                <option value="select">按成绩顺序选座（逐个点座位）</option>
+                <option value="score">按成绩自动排</option>
+                <option value="rotate">前后 / 左右轮换</option>
+                <option value="hold">沿用上次座次（不轮换）</option>
+              </select>
+            </div>
+            <div id="gen-options" class="gen-options"></div>
+            <div class="field">
+              <label for="gen-date">生效日期</label>
+              <input id="gen-date" type="date">
+            </div>
+            <button type="button" id="btn-generate" class="primary">生成候选</button>
+            <p class="hint" id="gen-hint"></p>
+          </section>
+          <section class="tool-card">
+            <h3>当前这张表</h3>
+            <div class="field">
+              <label for="version-select">版本</label>
+              <select id="version-select"></select>
+            </div>
+            <div class="btn-row">
+              <button type="button" id="btn-today">⟲ 今天生效的</button>
+              <button type="button" id="btn-adjust">✎ 微调座位</button>
+              <button type="button" id="btn-finalize" class="primary">★ 确认定版</button>
+              <button type="button" id="btn-export-seat">↓ 导出 Excel</button>
+            </div>
+            <p class="hint">定版时会在“导出/班级名/”下自动生成一份座次表 Excel（新文件，不覆盖旧的）。</p>
+          </section>
+          <section class="tool-card">
+            <h3>固定学生与性别</h3>
+            <p class="hint" id="pin-summary"></p>
+            <div class="btn-row">
+              <button type="button" id="btn-pin-mode">📌 固定学生</button>
+              <button type="button" id="btn-gender-mode">♂♀ 标注性别</button>
+            </div>
+            <p class="hint">固定的学生在随机、按成绩、轮换、沿用时都保持原座位；性别决定座次表中姓名的颜色（男蓝、女红）。</p>
+          </section>
+        </div>
+      </details>
+    </section>
+
+    <!-- 2. 课堂表现 -->
+    <section id="panel-scores" class="panel" hidden>
+      <article class="paper">
+        <div class="paper-head">
+          <div class="paper-head-left">
+            <h2 id="scores-title">课堂表现</h2>
+            <p id="scores-meta" class="meta"></p>
+          </div>
+          <div class="paper-head-actions">
+            <label class="inline-field">选择周 <select id="scores-week"></select></label>
+            <button type="button" id="btn-scores-export">↓ 导出 Excel</button>
+            <button type="button" id="btn-scores-clear" class="danger">清空所选周</button>
+          </div>
+        </div>
+        <div id="scores-detail" class="detail-box"></div>
+        <div class="legend">
+          <span><i class="key key-pos"></i>净分为正</span>
+          <span><i class="key key-neg"></i>净分为负</span>
+          <span>点击学生查看明细</span>
+          <span>第 1 排靠近讲台</span>
+        </div>
+        <div id="scores-map" class="seat-map"></div>
+      </article>
+    </section>
+
+    <!-- 3. 学生轨迹 -->
+    <section id="panel-student" class="panel" hidden>
+      <article class="paper">
+        <div class="paper-head">
+          <div class="paper-head-left">
+            <h2 id="traj-title">学生轨迹</h2>
+            <p class="meta">历次定版中的座位，以及课堂表现记录</p>
+          </div>
+          <div class="paper-head-actions">
+            <label class="inline-field">学生 <select id="traj-student"></select></label>
+          </div>
+        </div>
+        <div id="traj-stats" class="stats"></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>生效日期</th><th>教学周</th><th>排座方式</th><th>座位</th><th>前中后</th><th>左中右</th></tr></thead>
+            <tbody id="traj-seats"></tbody>
+          </table>
+        </div>
+        <div class="sub-head">
+          <h3>课堂表现</h3>
+          <div id="traj-score-stats" class="stats small"></div>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>记录时间</th><th>教学周</th><th>表现项目</th><th>分值</th><th></th></tr></thead>
+            <tbody id="traj-scores"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <!-- 4. 班级设置 -->
+    <section id="panel-settings" class="panel" hidden>
+      <div class="settings-grid">
+        <article class="paper">
+          <h2>班级</h2>
+          <div class="field row">
+            <label for="class-name">班级名称</label>
+            <input id="class-name" type="text" maxlength="30">
+            <button type="button" id="btn-rename">改名</button>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="btn-new-class">＋ 新建班级</button>
+            <button type="button" id="btn-import" class="primary">⤓ 导入名单</button>
+            <button type="button" id="btn-export-roster">↓ 导出名单 Excel</button>
+            <button type="button" id="btn-delete-class" class="danger">删除班级</button>
+          </div>
+          <p class="hint">导出的名单表可以直接在 Excel 里改性别、成绩、姓名或增删学生，保存后回到网页会自动读入。</p>
+        </article>
+
+        <article class="paper span-2">
+          <div class="paper-head">
+            <div class="paper-head-left"><h2>名单 <small id="roster-count"></small></h2></div>
+            <div class="paper-head-actions"><button type="button" id="btn-add-student">＋ 添加学生</button></div>
+          </div>
+          <div class="table-scroll roster-scroll">
+            <table class="roster-table">
+              <thead><tr><th>序号</th><th>姓名</th><th>性别</th><th>成绩</th><th>学号</th><th>状态</th></tr></thead>
+              <tbody id="roster-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="paper span-2">
+          <h2>座位布局</h2>
+          <div class="layout-fields">
+            <label>共 <input id="layout-rows" type="number" min="1" max="20"> 排</label>
+            <label>每排 <input id="layout-cols" type="number" min="1" max="20"> 列</label>
+            <span id="layout-capacity" class="muted"></span>
+          </div>
+          <p class="hint">点列与列之间的竖条设置或取消走廊；点座位设为“不可用”（再点恢复）。第 1 排靠近讲台。改布局只影响之后生成的座次。</p>
+          <div id="layout-preview" class="layout-preview"></div>
+          <div class="btn-row">
+            <button type="button" id="btn-save-layout" class="primary">保存布局</button>
+            <button type="button" id="btn-reset-layout">还原</button>
+          </div>
+        </article>
+
+        <article class="paper">
+          <h2>表现项</h2>
+          <p class="hint">所有班级共用。加分为正数、扣分为负数；扣分项可分两行显示。</p>
+          <div class="table-scroll">
+            <table class="items-table">
+              <thead><tr><th>名称</th><th>分值</th><th>显示在</th><th></th></tr></thead>
+              <tbody id="items-body"></tbody>
+            </table>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="btn-add-bonus">＋ 加分项</button>
+            <button type="button" id="btn-add-penalty">＋ 扣分项</button>
+            <button type="button" id="btn-save-items" class="primary">保存表现项</button>
+            <button type="button" id="btn-reset-items">恢复默认</button>
+          </div>
+        </article>
+
+        <article class="paper">
+          <h2>数据</h2>
+          <div id="data-info" class="data-info"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="import-dialog" class="dialog">
+    <div class="dialog-body">
+      <h2>导入名单</h2>
+      <p class="hint">支持 Excel（.xlsx）、CSV，也可以从表格里复制后直接粘贴。会自动跳过标题行，识别姓名、性别、成绩（或名次）、学号、班级等列；有“班级”列时可以一次导入多个班。</p>
+      <div class="field row">
+        <input type="file" id="import-file" accept=".xlsx,.csv,.txt">
+      </div>
+      <textarea id="import-text" rows="5" placeholder="或者把名单粘贴到这里：每行一名学生，可以带表头（如：序号 姓名 性别 成绩）"></textarea>
+      <div class="btn-row"><button type="button" id="btn-import-parse">识别粘贴的内容</button></div>
+      <div id="import-preview" class="import-preview"></div>
+      <div class="dialog-actions">
+        <button type="button" id="btn-import-cancel">取消</button>
+        <button type="button" id="btn-import-confirm" class="primary" disabled>导入</button>
+      </div>
+    </div>
+  </dialog>
+</body>
+</html>
