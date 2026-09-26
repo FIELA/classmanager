@@ -1,6 +1,6 @@
 /**
- * 班级座次管理 · 界面
- * 数据在“座次2/数据/”的记录文件里（见 store.js）；浏览器只暂存“还没写进文件夹”的修改。
+ * 班级助理 · 界面
+ * 数据在项目文件夹“数据/”下的记录文件里（见 store.js）；浏览器只暂存“还没写进文件夹”的修改。
  */
 (function () {
   'use strict';
@@ -128,16 +128,6 @@
     });
   }
 
-  async function hasEntry(dir, name, kind) {
-    try {
-      if (kind === 'directory') await dir.getDirectoryHandle(name);
-      else await dir.getFileHandle(name);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
   async function permitted(handle, ask) {
     try {
       if ((await handle.queryPermission({ mode: 'readwrite' })) === 'granted') return true;
@@ -168,18 +158,21 @@
     return `${m ? `${m[1] === 'Edg' ? 'Edge' : m[1]} ${m[2]}` : '浏览器'} ${os}`.trim();
   }
 
+  const ENTRY = store.ENTRY_FILES[0];
+
   async function resolveRoot(handle, initial) {
-    if (await hasEntry(handle, '座次管理.html', 'file') || await hasEntry(handle, store.DATA_DIR, 'directory')) return handle;
-    try {
-      const child = await handle.getDirectoryHandle('座次2');
-      if (await hasEntry(child, '座次管理.html', 'file') || await hasEntry(child, store.DATA_DIR, 'directory')) return child;
-    } catch (e) { /* 没有子文件夹 */ }
-    if (await hasEntry(handle, '教室管理.html', 'file')) {
-      alert('这是旧版“座次”项目的文件夹。新项目的数据在“座次2”文件夹里，请重新选择。');
+    const r = await store.findProjectRoot(handle);
+    if (r.root) return r.root;
+    if (r.reason === 'old-project') {
+      alert(`这是旧版座次项目的文件夹。请选择本项目所在的文件夹（里面有“${ENTRY}”）。`);
       return null;
     }
     if (initial) return null;
-    return confirm(`“${handle.name}”里没有找到座次2 项目（没有“座次管理.html”）。\n确定要把数据保存在这个文件夹里吗？`) ? handle : null;
+    if (r.reason === 'multiple') {
+      alert(`“${handle.name}”里有不止一个项目文件夹，请直接选择要用的那一个（里面有“${ENTRY}”）。`);
+      return null;
+    }
+    return confirm(`“${handle.name}”里没有找到本项目（没有“${ENTRY}”）。\n确定要把数据保存在这个文件夹里吗？`) ? handle : null;
   }
 
   async function loadData() {
@@ -553,7 +546,7 @@
       btn.title = '浏览器需要再授权一次才能读写这个文件夹';
     } else {
       btn.textContent = '📂 连接文件夹';
-      btn.title = '选择“座次2”文件夹';
+      btn.title = `选择项目所在的文件夹（里面有“${ENTRY}”）`;
     }
     renderSaveStatus();
   }
@@ -577,7 +570,7 @@
   function renderAlerts() {
     const items = [];
     if (!HAS_FS) {
-      items.push({ level: 'error', html: '⛔ 这个浏览器不能读写文件夹。请用 Chrome 或 Edge（版本 86 以上）打开“座次管理.html”；Win7 电脑可以用 Chrome 109 或 Edge 109。' });
+      items.push({ level: 'error', html: '⛔ 这个浏览器不能读写文件夹。请用 Chrome 或 Edge（版本 86 以上）打开“' + ENTRY + '”；Win7 电脑可以用 Chrome 109 或 Edge 109。' });
     }
     if (S.root && S.writer && S.writer.lastError && S.writer.pendingCount()) {
       items.push({ level: 'error', html: `⚠ 有 <b>${S.writer.pendingCount()}</b> 条修改还没保存到文件夹：${esc(S.writer.lastError)}。修改暂存在浏览器里；插好 U 盘或关闭占用文件的程序后点“重试”。`, act: 'retry', actText: '重试保存' });

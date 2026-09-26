@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>班级座次管理</title>
+  <title>班级助理</title>
   <link rel="stylesheet" href="辅助资源/assets/app.css">
   <script src="辅助资源/assets/exceljs.min.js"></script>
   <script src="辅助资源/assets/core.js"></script>
@@ -13,7 +13,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">班级座次<span>座次 · 抽取 · 课堂表现</span></div>
+    <div class="brand">班级助理<span>座次 · 抽取 · 记分 · 轨迹</span></div>
     <div class="class-switch">
       <label for="class-select">班级</label>
       <select id="class-select" aria-label="切换班级"></select>
@@ -39,11 +39,11 @@
     <!-- 未连接文件夹时的引导 -->
     <section id="welcome" class="panel" hidden>
       <article class="paper welcome">
-        <h1>班级座次管理</h1>
-        <p class="lead">数据保存在“座次2”文件夹里（U 盘或电脑上都可以），网页本身不联网、不上传任何内容。</p>
+        <h1>班级助理</h1>
+        <p class="lead">数据保存在项目所在的文件夹里（U 盘或电脑上都可以），网页本身不联网、不上传任何内容。</p>
         <div id="welcome-body"></div>
         <ol class="steps">
-          <li>点上方或下面的 <b>连接文件夹</b>，选择 <b>座次2</b> 文件夹（里面有“座次管理.html”）。</li>
+          <li>点上方或下面的 <b>连接文件夹</b>，选择项目所在的文件夹（里面有“班级助理.html”）；选它的上一级文件夹也可以。</li>
           <li>浏览器问“是否允许编辑”时点 <b>允许</b>。在新电脑上每次打开都需要这样授权一次。</li>
           <li>连接后即可查看座次、随机抽取、课堂记分；所有修改直接保存到这个文件夹。</li>
         </ol>

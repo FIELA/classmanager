@@ -321,8 +321,8 @@
   function newWorkbook() {
     const Excel = getExcelJS();
     const wb = new Excel.Workbook();
-    wb.creator = '班级座次管理';
-    wb.lastModifiedBy = '班级座次管理';
+    wb.creator = '班级助理';
+    wb.lastModifiedBy = '班级助理';
     wb.created = new Date();
     wb.modified = new Date();
     return wb;

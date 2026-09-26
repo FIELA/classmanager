@@ -479,6 +479,45 @@
     return name;
   }
 
+  // 入口网页的文件名（第一个是现在的名字，后面是旧名字，仍然认）
+  const ENTRY_FILES = ['班级助理.html', '座次管理.html'];
+
+  async function hasDir(dir, name) {
+    try {
+      await dir.getDirectoryHandle(name);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function isProjectDir(dir, strict) {
+    for (const f of ENTRY_FILES) {
+      if (await fileExists(dir, f)) return true;
+    }
+    return !strict && hasDir(dir, DATA_DIR);
+  }
+
+  // 老师选中的文件夹 → 项目文件夹。选中项目本身，或选中它的上一级都可以；不依赖文件夹的名字。
+  // reason：self 本身就是；child 在子文件夹中找到唯一一个；multiple 子文件夹里有多个；old-project 旧版座次项目；none 没找到
+  async function findProjectRoot(handle) {
+    if (await isProjectDir(handle, false)) return { root: handle, reason: 'self' };
+    const found = [];
+    try {
+      for await (const e of handle.values()) {
+        if (e.kind !== 'directory' || isJunkName(e.name)) continue;
+        if (await isProjectDir(e, true)) {
+          found.push(e);
+          if (found.length > 1) break;
+        }
+      }
+    } catch (e) { /* 列不出子文件夹时按“没找到”处理 */ }
+    if (found.length === 1) return { root: found[0], reason: 'child' };
+    if (found.length > 1) return { root: null, reason: 'multiple' };
+    if (await fileExists(handle, '教室管理.html')) return { root: null, reason: 'old-project' };
+    return { root: null, reason: 'none' };
+  }
+
   // 新建文件（绝不覆盖同名文件）
   async function writeNewFile(root, dirParts, base, ext, data) {
     try {
@@ -639,6 +678,7 @@
     listClasses, studentsOf, layoutOf, finalsOf, effectiveFinal, sourceFinalFor, scoresOf, itemsOf,
     parseJsonl, serializeOps,
     describeError, getSubDir, getDirPath, fileExists, listEntries, writeFileChecked, uniqueName, writeNewFile, stamp,
+    ENTRY_FILES, findProjectRoot,
     readProject, maybeWriteSnapshot, SessionWriter, makeHeader
   };
 

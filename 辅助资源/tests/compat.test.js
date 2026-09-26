@@ -59,7 +59,7 @@ test('样式不使用 Chrome 86 不支持的特性', () => {
 });
 
 test('页面引用的脚本与样式都存在；app.js 用到的元素编号都在页面里', () => {
-  const html = read(path.join(ROOT, '座次管理.html'));
+  const html = read(path.join(ROOT, '班级助理.html'));
   const refs = [...html.matchAll(/(?:src|href)="(辅助资源\/[^"]+)"/g)].map(m => m[1]);
   assert.ok(refs.length >= 5);
   refs.forEach(r => assert.ok(fs.existsSync(path.join(ROOT, r)), `缺少文件：${r}`));

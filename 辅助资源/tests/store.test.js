@@ -146,6 +146,40 @@ test('读取：忽略 ._、~$、.crswap 等系统文件；冲突副本里的重�
   assert.equal(st.opCount, 2, '会话头 + 建班，各一次');
 });
 
+test('识别项目文件夹：选中项目本身或它的上一级都可以；不依赖文件夹叫什么', async () => {
+  const project = async (name, entry) => {
+    const d = new FakeDir(name);
+    await d.writeText(entry || '班级助理.html', '<html></html>');
+    return d;
+  };
+  const self = await project('任意名字');
+  assert.deepEqual(await store.findProjectRoot(self), { root: self, reason: 'self' });
+  const oldEntry = await project('旧入口名', '座次管理.html');
+  assert.equal((await store.findProjectRoot(oldEntry)).reason, 'self', '旧文件名也要认');
+
+  const parent = new FakeDir('上一级');
+  parent.dirs.set('别的文件夹', new FakeDir('别的文件夹'));
+  const child = await project('项目');
+  parent.dirs.set('项目', child);
+  assert.deepEqual(await store.findProjectRoot(parent), { root: child, reason: 'child' });
+
+  parent.dirs.set('项目副本', await project('项目副本'));
+  assert.equal((await store.findProjectRoot(parent)).reason, 'multiple');
+
+  const legacy = new FakeDir('旧项目');
+  await legacy.writeText('教室管理.html', '<html></html>');
+  assert.deepEqual(await store.findProjectRoot(legacy), { root: null, reason: 'old-project' });
+
+  // 子文件夹里只有“数据”目录、没有入口网页，不当作项目（避免误认）
+  const loose = new FakeDir('随便');
+  const sub = new FakeDir('子');
+  await sub.writeText('数据/x.txt', 'x');
+  loose.dirs.set('子', sub);
+  assert.deepEqual(await store.findProjectRoot(loose), { root: null, reason: 'none' });
+  // 直接选中的文件夹里有“数据”目录，则视为项目本身（例如只拷了数据）
+  assert.equal((await store.findProjectRoot(sub)).reason, 'self');
+});
+
 test('新建文件从不覆盖同名文件', async () => {
   const root = new FakeDir('座次2');
   const a = await store.writeNewFile(root, ['导出', '测试1班'], '名单-测试1班', '.xlsx', 'A');
