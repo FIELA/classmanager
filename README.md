@@ -1,36 +1,38 @@
-# 班级助理
+# 班级助理 (Class Assistant)
 
-面向任课老师的本地网页工具：管理多个班级的座次，课堂上随机抽取学生、即时记分，并追踪每位学生的座位轨迹与课堂表现。双击网页即可使用，无需安装，无需联网。
+A local web tool for subject teachers: manage seating charts for several classes, draw students at random during class, record points on the spot, and track each student's seat history and classroom performance. Open the page by double-clicking it — no installation required. The user interface is in Chinese.
 
-## 功能
+## Features
 
-- **多班级**：默认显示一个班，一键切换；名单可从 Excel、CSV 导入或直接粘贴，自动识别姓名、性别、成绩、班级等列。
-- **自定义座位布局**：设置排数、横向最大列数；可按排号范围套用 `2+2+2`、`3+2+3` 等座位组合，也可逐排调整走廊和不可用座位。
-- **多种排座方式**：随机（可同桌男女搭配）、按成绩顺序选座、按成绩自动排、前后/左右轮换、沿用上次；排座前可固定部分学生的座位。
-- **学生版 / 教师版座次表**：两种视角同源生成，教师版旋转 180°；男生姓名蓝色、女生红色；点选即可微调座位。
-- **快速标注性别**：选“标女生”（或“标男生”）逐个点选，其余一键反标，可撤销；没有座次表时按名单标注。
-- **随机抽取**：一次抽 1～6 人或自定义人数，抽中者在座次表中高亮、在上方醒目显示；可设置本节课不重复。
-- **分组过关**：每班设置 1 名课代表与固定 5～10 人样本；每周抽出 5 名样本向课代表背诵，这 5 人再各带一组。课代表与从所有非课代表学生中随机抽出的 4 人向老师背诵，学生可兼任样本组长；其余学生平均分到五组。动画依次确定向老师背诵名单、向课代表背诵名单与组长、各组组员；确认后按周定版，可查看历史版本。
-- **课堂记分**：在座次表上点选学生即可加分、扣分，支持多选与撤销；表现项可自定义。
-- **课堂表现与学生轨迹**：按周查看全班表现和个人明细；查看每位学生历次座位及前中后、左中右分布。
-- **Excel 导入导出**：名单、座次表（学生版 + 教师版）、课堂表现都能导出，在 Excel 里修改后网页自动读回。
+- **Multiple classes**: one class is shown at a time, switch with one click. Rosters can be imported from Excel or CSV, or pasted directly; name, gender, score, class and similar columns are recognized automatically. Within one class, rows with the same name are merged into one student; if a name also appears in another class, the teacher is asked to confirm before importing.
+- **Custom seating layouts**: set the number of rows and the maximum columns; apply seat groupings such as `2+2+2` or `3+2+3` to a range of rows, or adjust aisles and unavailable seats row by row.
+- **Several seating methods**: random (optionally pairing boys and girls as deskmates), choose seats in score order, automatic placement by score, front/back and left/right rotation, and keep the previous chart. Individual students can be pinned to a seat before generating.
+- **Student view / teacher view**: both are generated from the same data; the teacher view is rotated 180°. Boys' names are blue, girls' red. Click to fine-tune seats.
+- **Fast gender marking**: choose "mark girls" (or "mark boys"), click students one by one, mark the rest with one click, and undo. Works from the roster when there is no seating chart yet.
+- **Random draw**: draw 1–6 students or a custom number; drawn students are highlighted on the chart and shown prominently above it. Optionally no repeats within a lesson.
+- **Group recitation**: each class has one course representative and a fixed sample of 5–10 students. Every week 5 sample students recite to the representative and each then leads a group. The representative and 4 students drawn from all non-representative students recite to the teacher; a student may also be a sample group leader. The remaining students are split evenly into five groups. An animation reveals, in order, the list reciting to the teacher, the list reciting to the representative with the group leaders, and each group's members. After confirmation the result is finalized per week, and past versions stay viewable.
+- **Classroom points**: click students on the chart to add or deduct points, with multi-select and undo. Point items are customizable.
+- **Performance and seat history**: view class performance and per-student details by week; view each student's past seats and front/middle/back and left/center/right distribution.
+- **Excel import and export**: rosters, seating charts (student + teacher view) and classroom performance can all be exported. Edits made in Excel are read back into the page automatically.
 
-## 优势
+## Advantages
 
-- **本地、私密**：不联网、不上传，学生信息只保存在你自己选择的文件夹里。
-- **U 盘即插即用**：整个项目可以放在 U 盘上，在教室电脑上直接打开；兼容 Win7（Chrome/Edge 86 及以上）。
-- **多设备同步不冲突**：数据以“只新建、不修改”的记录文件保存。配合 SyncTime、OneDrive 或 U 盘在多台电脑之间使用，不会出现两边改了同一个文件的冲突，各处的修改自动合并。
-- **不丢数据**：每次操作都立即保存；U 盘意外拔出时，修改先暂存在浏览器，重新插上后自动补存。
-- **Excel 双向可用**：导出的表格可以直接在 Excel/WPS 里改，改动会自动读回，打开旧表修改也不会覆盖更新的数据。
+- **Local and private**: nothing is uploaded; student data stays only in the folder you choose. The only network access is a clock check against public time services (a plain request that carries no data). Without internet the page works fully offline and uses the computer's own clock.
+- **Internet time as the reference**: when online, all dates and record times follow internet time. The page warns when a computer's system clock is off, or when records come from a computer whose clock ran ahead.
+- **Plug-and-play from a USB drive**: the whole project can live on a USB drive and be opened directly on classroom computers; works on Win7 (Chrome/Edge 86 or later).
+- **Conflict-free sync across devices**: data is stored as "create-only, never modify" record files. With SyncTime, OneDrive or a USB drive shared between computers, no file is ever changed on both sides, and changes from every computer are merged automatically.
+- **No lost data**: every change is saved immediately. If the USB drive is pulled out, changes are kept in the browser and saved again when it is plugged back in.
+- **Two-way Excel**: exported workbooks can be edited in Excel/WPS and the edits are read back. Editing an old workbook never overwrites newer data, and editing the same exported workbook several times counts as one continuous edit, not a conflict.
 
-## 快速开始
+## Quick start
 
-1. 用 Chrome 或 Edge 打开 `班级助理.html`。
-2. 点“连接文件夹”，选择项目所在的文件夹，并允许读写。
-3. 在“班级设置”里导入名单、设置座位布局，再回到“座次”页生成座次、确认定版。
-4. 使用“分组过关”前，在该页的“固定人员设置”选择课代表和 5～10 名样本并保存。至少需要 15 名在班学生；组员人数随班级人数和兼任情况平均分配。抽取后核对候选结果，再点“确认定版”。切换查看周或展开“查看历史版本”可看往期安排。
+1. Open `班级助理.html` in Chrome or Edge.
+2. Click "连接文件夹" (Connect folder), choose the project folder, and allow read/write access.
+3. In "班级设置" (Class settings), import a roster and set the seating layout, then return to "座次" (Seating) to generate a chart and confirm it ("确认定版").
+4. Before using "分组过关" (Group recitation), open "固定人员设置" on that page, choose the course representative and 5–10 sample students, and save. At least 15 active students are required; group sizes are balanced automatically based on class size and overlapping roles. After drawing, check the candidate result, then click "确认定版". Switch the week or expand "查看历史版本" to see earlier arrangements.
 
-## 开发
+## Development
 
-- 程序在 `辅助资源/assets/`，测试：`node --test 辅助资源/tests/`。
-- 学生数据只存放在项目的 `数据/`、`导出/` 目录，不会进入仓库。维护约定见 `AGENTS.md`。
+- Code lives in `辅助资源/assets/`. Run the tests with `node --test 辅助资源/tests/*.test.js`.
+- After cloning, enable the privacy hooks once: `git config core.hooksPath .githooks`.
+- Student data is stored only in the project's `数据/` and `导出/` folders and never enters the repository. Maintenance conventions are in `AGENTS.md`.

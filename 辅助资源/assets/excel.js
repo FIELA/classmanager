@@ -182,16 +182,39 @@
     }
     const out = [];
     groups.forEach((g, key) => {
-      const seen = new Map();
-      g.students.forEach(s => seen.set(s.name, (seen.get(s.name) || 0) + 1));
-      const dup = Array.from(seen.values()).filter(n => n > 1).length;
+      const merged = mergeSameName(g.students);
       const w = [];
       if (g.badGender) w.push(`${g.badGender} 人的性别无法识别，已留空`);
       if (g.noScore) w.push(`${g.noScore} 人没有成绩（缺考或空白）`);
-      if (dup) w.push(`有 ${dup} 组同名学生，界面上会加序号区分`);
-      out.push({ className: key, students: g.students, warnings: w });
+      if (merged.dup) w.push(`有 ${merged.dup} 组同名学生，已按同一名学生合并`);
+      out.push({ className: key, students: merged.students, warnings: w });
     });
     return { groups: out, columns: cols, headerRow: h, warnings };
+  }
+
+  // 同一班级里的同名学生按同一人合并：后面的行补充/更新前面的字段；只要有一行在班，就算在班
+  function mergeSameName(list) {
+    const byName = new Map();
+    const students = [];
+    let dup = 0;
+    for (const s of list) {
+      const prev = byName.get(s.name);
+      if (!prev) {
+        const copy = Object.assign({}, s);
+        byName.set(s.name, copy);
+        students.push(copy);
+        continue;
+      }
+      if (!prev.dupCounted) { dup++; prev.dupCounted = true; }
+      Object.keys(s).forEach(k => {
+        if (k === 'active') return;
+        const v = s[k];
+        if (v !== undefined && v !== null && v !== '') prev[k] = v;
+      });
+      if (s.active !== false || prev.active !== false) delete prev.active;
+    }
+    students.forEach(s => { delete s.dupCounted; });
+    return { students, dup };
   }
 
   function sheetRows(ws, maxRows, maxCols) {
@@ -726,7 +749,7 @@
     if (ids(seats) !== ids(meta.base.seats)) { res.warnings.push('座次表里只能对调或挪动座位，不能增删学生；本次未读入'); return res; }
     if (meta.draft) { res.warnings.push('候选稿导出的座次表修改不会读入，请在网页里微调后再定版'); return res; }
     const sorted = core.mapToSeats(core.seatsToMap(seats));
-    const payload = { k: 'final.set', classId: cls.id, date: meta.date, seats: sorted, layout: L, mode: 'adjust', meta: { from: 'excel' }, base: meta.finalId || null };
+    const payload = { k: 'final.set', classId: cls.id, date: meta.date, seats: sorted, layout: L, mode: 'adjust', meta: { from: 'excel', exportId: meta.exportId || '' }, base: meta.finalId || null };
     const finalId = 'f_x' + core.hash53(`${meta.exportId}|${JSON.stringify(sorted)}`);
     res.ops.push(Object.assign({ id: detId('x_', meta.exportId, payload), finalId }, payload));
     let moved = 0;
@@ -840,7 +863,7 @@
   const CMExcel = {
     META_SHEET, SCORE_SHEET, SCORE_HEADERS, ROSTER_ID_HEADER, COLOR,
     cellText, parseNumber, normalizeDate, normalizeClassName, classNameFromText,
-    parseRosterRows, parseRosterWorkbook, parseRosterText, decodeText, splitTable,
+    parseRosterRows, mergeSameName, parseRosterWorkbook, parseRosterText, decodeText, splitTable,
     readMeta, seatCell, createRosterWorkbook, createSeatingWorkbook, createScoresWorkbook,
     readExportEdits, safeFileName, exportStamp
   };

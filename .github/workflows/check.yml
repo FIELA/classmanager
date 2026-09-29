@@ -1,0 +1,23 @@
+# Public repository guard: block real-data files by path/type and run the test suite.
+# (Student-name checks need the local 数据/ folder, so they only run in the local git hooks.)
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: No real data in tracked files
+        run: node 辅助资源/tools/check-no-real-data.js --all --verbose
+      - name: Tests
+        run: node --test "辅助资源/tests/*.test.js"

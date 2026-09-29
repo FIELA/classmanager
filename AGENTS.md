@@ -1,39 +1,51 @@
-# 班级助理 · 项目约定
+# 班级助理 · Project conventions
 
-- 默认中文。先读 README.md。本项目于 2026-09-26 新建，参照旧项目“02事务/座次”，但不迁移旧数据、不做值日、不做两班同屏。
-- 学生姓名只用于本项目：外部记录、提交信息、日志一律不包含姓名、名单或个人座位明细。
+- Respond in Chinese by default. Read README.md first. The project was created on 2026-09-26, modelled on the old project "02事务/座次", but it does not migrate old data, does not handle duty rosters, and does not show two classes on one screen.
+- Student names are used only inside this project: external records, commit messages and logs must never contain names, rosters or individual seat details.
 
-## 隐私与仓库（仓库公开：github.com/FIELA/classmanager）
+## Privacy and the repository (public: github.com/FIELA/classmanager)
 
-- 真实数据只在 `数据/`、`导出/`，两者被 `.gitignore` 忽略；`.gitignore` 采用白名单，根目录只放行程序与文档。
-- `.githooks/pre-commit`、`pre-push` 调用 `辅助资源/tools/check-no-real-data.js`：拦截数据目录、表格/数据文件类型，以及本机 `数据/` 里出现过的任何学生姓名。不要绕过（不用 `--no-verify`）。
-- 测试与示例只用虚构姓名（如“赵测一”），测试数据在内存中生成，不落盘。
-- git 数据库放在 `~/.gitdirs/classmanager.git`（项目里的 `.git` 是指向它的文本文件），避免 OneDrive 与 SyncTime 同步 git 内部文件。
+- Real data lives only in `数据/` and `导出/`; both are ignored by `.gitignore`. `.gitignore` is a whitelist: at the root only the program, docs, `.githooks/` and `.github/` are allowed.
+- Enable the hooks once per clone: `git config core.hooksPath .githooks`. `pre-commit`, `pre-push` and `commit-msg` call `辅助资源/tools/check-no-real-data.js`, which blocks the data folders, spreadsheet/data file types, and any student name found in the local `数据/` — in files and in commit messages. Never bypass it (no `--no-verify`).
+- CI (`.github/workflows/check.yml`) runs the path/file-type check and the tests on every push. It has no local `数据/`, so the name check only happens in the local hooks.
+- Tests and examples use fictitious names only (e.g. "赵测一"); test data is generated in memory and never written to disk.
+- The git database lives in `~/.gitdirs/classmanager.git` (the project's `.git` is a text file pointing to it), so that OneDrive and SyncTime never sync git internals.
 
-## 同步安全（核心，不可破坏）
+## Sync safety (core — must not be broken)
 
-使用场景：项目在 U 盘上，教室电脑（Win11 / Win7）直接从 U 盘打开；Mac 上用 SyncTime 双向同步 `备课` ↔ U 盘，Mac 文件夹同时在 OneDrive 中。SyncTime 规则：同一文件在两边都改过即冲突，删除会同步到另一边，按修改时间与大小判断。
+Usage scenario: the project sits on a USB drive and classroom computers (Win11 / Win7) open it directly from the drive. On the Mac, SyncTime syncs `备课` ↔ USB drive in both directions, and the Mac folder is also in OneDrive. SyncTime rules: a file changed on both sides is a conflict, deletions propagate to the other side, and changes are detected by modification time and size.
 
-- 网页与工具 **只新建文件**，从不覆盖、改名、移动或删除已有文件。唯一例外：当前会话自己的记录文件在会话期间会被重写（只有这一个会话写它）。
-- 数据 = `数据/` 下全部 `*.jsonl` 记录文件（一行一条操作）+ `数据/快照/` 下的快照（快照只是加速，也是新文件）。`数据/project.json` 只在项目创建时写一次。
-- 操作带唯一编号与混合逻辑时钟时间戳（`store.js`），合并时按时间戳排序、按编号去重；删除用“删除标记”，不真删。
-- 同一周两份各自保存的座次定版或分组定版、两份布局、两份分组固定人员会被识别为冲突，界面让老师选择；其余字段后写为准。
-- 读取时忽略 `._*`、`~$*`、`*.crswap`、`.DS_Store` 等系统/临时文件；文件名只用 Windows 与 FAT32 允许的字符，末尾不留空格或点。
-- Excel 只作为“导出件”：每次导出都是新文件。表内隐藏表 `_classmanager` 存导出时的原始内容；读回时只比较老师改动的部分，生成的操作编号由文件内容决定（两边读到同一处修改，编号相同，只算一次）。
-- 浏览器存储（localStorage / IndexedDB，键名前缀 `classmanager.v1`）只暂存还没写进文件夹的操作，写入成功后清除；与旧项目的键名不同。
+- The page and the tools **only create new files**; they never overwrite, rename, move or delete an existing file. The single exception: the current session's own record file is rewritten during the session (only that session writes it).
+- Data = all `*.jsonl` record files under `数据/` (one operation per line) + snapshots under `数据/快照/` (snapshots only speed up loading, and are new files too). `数据/project.json` is written once, when the project is created.
+- Every operation carries a unique id and a hybrid-logical-clock timestamp (`store.js`). Merging sorts by timestamp and de-duplicates by id; deletions use tombstones, nothing is really deleted. A malformed operation is skipped on its own (`store.safeApply`) and never blocks loading.
+- Two independently saved seating finals or group finals for the same week, two layouts, or two group-member settings are detected as a conflict and the teacher chooses in the UI. Successive read-backs of the same exported workbook are sequential edits, not a conflict. All other fields are last-writer-wins.
+- Ignore system/temporary files when reading (`._*`, `~$*`, `*.crswap`, `.DS_Store`, …). File names use only characters allowed by Windows and FAT32, with no trailing space or dot.
+- Excel is only an "export": every export is a new file. The hidden sheet `_classmanager` stores the content at export time; read-back compares only the teacher's changes, and the generated operation ids are derived from the file content (if two computers read the same change, the id is the same and it counts once). The page remembers the last read version of each exported file (size + modification time); a failed read is retried after the file changes or the page is reopened.
+- Browser storage (localStorage / IndexedDB, keys prefixed `classmanager.v1`) only holds operations not yet written to the folder, one key per session (`classmanager.v1.outbox.<session id>`), cleared after a successful write. The key names differ from the old project.
 
-## 实现
+## Time
 
-- 入口 `班级助理.html`（旧名 `座次管理.html` 仍能识别，见 `store.ENTRY_FILES`）；`辅助资源/assets/`：
-  - `core.js` 纯规则：日期、布局与分区（含按排座位组合）、四种排座（随机/按成绩/轮换/沿用）、抽取、分组过关、表现汇总。
-  - `store.js` 数据层：时钟、合并、记录文件读写、快照。
-  - `excel.js` 名单导入、三类导出、读回修改。
-  - `app.js` 界面；`app.css` 样式；`exceljs.min.js` 为第三方库（MIT）。
-- 坐标：第 r 排第 c 列，学生视角；第 1 排靠近讲台；教师版只在显示时旋转 180°。
-- 兼容性：只用 Chrome 86 已支持的语法与 CSS（Win7 最高 Chrome/Edge 109）；不用 ES 模块（file:// 下无法加载）。`tests/compat.test.js` 会检查。
-- 工具：`tools/import-roster.js`（从成绩表导入班级）、`tools/check-no-real-data.js`（防泄露检查）、`tools/node-fs-handle.js`（让 Node 用同一数据层读写磁盘）。
+- Internet time is the reference. The page queries public time services in order (`store.TIME_SOURCES`, a plain GET with no data; first success wins) at start-up and every 30 minutes; "now" is then local time + offset (clock, dates, record times, file-name stamps). Offline, it falls back to the local clock.
+- Warnings: the system clock differs from internet time by more than `store.CLOCK_TOLERANCE` (5 minutes); records are timestamped later than internet time (a computer whose clock ran ahead); offline, local time is more than 1 hour earlier than existing records.
+- Snapshots are chosen by the time in their file name: a snapshot later than the reference time is "ahead" and used only when no normal snapshot exists, with a warning. A new snapshot is named with the reference time and always later than the snapshot currently in use, so it is picked next time and snapshots are never rewritten on every load.
 
-## 测试与验收
+## Rosters and same-name students
 
-- `node --test 辅助资源/tests/`；改规则先写失败测试。`store.test.js` 中有按 SyncTime 规则模拟 Mac ↔ U 盘同步的测试，改数据层时必须保持通过。
-- 浏览器验收用临时副本 + 本地服务 + 浏览器私有目录（OPFS）：在控制台先建好 `数据` 子目录，再 `ClassManagerApp.connectHandle(句柄)`；结束后清除私有目录、localStorage、IndexedDB 与临时副本。不要用真实数据文件夹做写入测试。
+- Within one class, the same name is the same student: duplicate rows in an import are merged (later rows fill in fields), merging into an existing class matches by name (preferring active students with a lower sequence number), and "add student" refuses a duplicate (or offers to restore a student who left).
+- If an imported or added name already belongs to an active student in another class, the teacher must confirm first. `tools/import-roster.js` stops and asks for `--yes` in that case (it prints only counts, never names).
+
+## Implementation
+
+- Entry point `班级助理.html` (the old name `座次管理.html` is still recognized, see `store.ENTRY_FILES`); `辅助资源/assets/`:
+  - `core.js` pure rules: dates, layouts and zones (including per-row seat groupings), four seating methods (random / by score / rotation / keep), drawing, group recitation, performance summaries, same-name matching.
+  - `store.js` data layer: clock, internet time, merging, record-file I/O, snapshots.
+  - `excel.js` roster import, three kinds of export, reading edits back.
+  - `app.js` UI; `app.css` styles; `exceljs.min.js` is a third-party library (MIT).
+- Coordinates: row r, column c, from the students' point of view; row 1 is nearest the lectern; the teacher view is only rotated 180° for display.
+- Compatibility: only syntax and CSS supported by Chrome 86 (Win7 tops out at Chrome/Edge 109); no ES modules (they cannot load under file://). `tests/compat.test.js` checks this.
+- Tools: `tools/import-roster.js` (import classes from score sheets), `tools/check-no-real-data.js` (leak check), `tools/node-fs-handle.js` (lets Node read/write disk through the same data layer).
+
+## Tests and acceptance
+
+- `node --test 辅助资源/tests/*.test.js`. When changing rules, write a failing test first. `store.test.js` contains tests that simulate Mac ↔ USB sync under SyncTime's rules; they must keep passing whenever the data layer changes.
+- Browser acceptance uses a temporary copy + a local server + the browser's private directory (OPFS): in the console, first create a `数据` subfolder, then call `ClassManagerApp.connectHandle(handle)`. Afterwards clear the private directory, localStorage, IndexedDB and the temporary copy. Never run write tests against a real data folder.

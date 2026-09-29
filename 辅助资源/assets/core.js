@@ -432,6 +432,34 @@
     });
   }
 
+  // 按姓名对应已有学生（同一班级里同名视为同一人）：同名时取在班、序号靠前的一位
+  function rosterByName(students) {
+    const map = new Map();
+    (students || []).slice()
+      .sort((a, b) => ((a.active === false) - (b.active === false)) || compareRoster(a, b))
+      .forEach(s => { if (!map.has(s.name)) map.set(s.name, s); });
+    return map;
+  }
+
+  // 同名学生出现在不同班级：entries = [{ key, className, names, incoming }]，key 相同的算同一个班。
+  // 只报告至少出现在一个“待写入”（incoming）班级里的姓名：[{ name, classes: [班级名…] }]
+  function crossClassNames(entries) {
+    const byName = new Map();
+    (entries || []).forEach(e => {
+      new Set(e.names || []).forEach(n => {
+        if (!byName.has(n)) byName.set(n, { classes: new Map(), incoming: false });
+        const x = byName.get(n);
+        x.classes.set(e.key, e.className);
+        if (e.incoming) x.incoming = true;
+      });
+    });
+    const out = [];
+    byName.forEach((x, name) => {
+      if (x.incoming && x.classes.size > 1) out.push({ name, classes: Array.from(x.classes.values()) });
+    });
+    return out;
+  }
+
   // 同名学生在界面上加区分（序号/学号）
   function displayNames(students) {
     const count = new Map();
@@ -801,7 +829,8 @@
     ROW_ZONES, rowZoneIndex, rowZone, colZone, zoneOf, fillOrder, deskmatePairs, displayColumns, displayRows,
     defaultLayoutFor, seatLabel,
     // 学生
-    normalizeName, normalizeGender, GENDER_TEXT, applyGenderBrush, fillRemainingGender, activeStudents, compareRoster, rankStudents, displayNames,
+    normalizeName, normalizeGender, GENDER_TEXT, applyGenderBrush, fillRemainingGender, activeStudents, compareRoster, rankStudents,
+    rosterByName, crossClassNames, displayNames,
     // 排座
     seatsToMap, mapToSeats, sanitizePins, randomSeating, scoreSeating, defaultRotation, rotateSeating, holdSeating,
     placeLeftovers, validateSeats,

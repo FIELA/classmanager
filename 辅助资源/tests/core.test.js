@@ -321,3 +321,27 @@ test('课堂表现汇总与默认表现项', () => {
   assert.deepEqual(sum.get('a'), { bonusCount: 1, bonusSum: 1, penaltyCount: 1, penaltySum: -3, net: -2 });
   assert.equal(sum.get('b').net, -10);
 });
+
+test('同名学生：同班按一人对应（优先在班、序号靠前）；不同班级给出提醒', () => {
+  const list = [
+    { id: 'a', name: '赵测一', seq: 5, active: true },
+    { id: 'b', name: '赵测一', seq: 2, active: false },
+    { id: 'c', name: '赵测一', seq: 9, active: true },
+    { id: 'd', name: '钱测一', seq: 1, active: true }
+  ];
+  const m = core.rosterByName(list);
+  assert.equal(m.get('赵测一').id, 'a');
+  assert.equal(m.get('钱测一').id, 'd');
+
+  const clash = core.crossClassNames([
+    { key: 'c1', className: '测试1班', names: ['赵测一', '钱测一'], incoming: false },
+    { key: 'c2', className: '测试2班', names: ['孙测一', '李测一'], incoming: false },
+    { key: 'c3', className: '测试3班', names: ['李测一'], incoming: false },
+    { key: 'c1', className: '测试1班', names: ['钱测一', '周测一'], incoming: true },
+    { key: 'new:1', className: '测试4班', names: ['赵测一', '周测一', '周测一'], incoming: true }
+  ]);
+  assert.deepEqual(clash, [
+    { name: '赵测一', classes: ['测试1班', '测试4班'] },
+    { name: '周测一', classes: ['测试1班', '测试4班'] }
+  ], '合并到同一班的同名不算；两个已有班级之间原有的同名不在这次提醒范围');
+});

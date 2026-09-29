@@ -4,6 +4,7 @@
  *   --staged  检查暂存区（pre-commit 使用）
  *   --push    检查即将推送、远端还没有的全部提交（pre-push 使用，从标准输入读取引用）
  *   --all     检查当前已跟踪的全部文件
+ *   --message <文件>  检查提交信息（commit-msg 使用）
  * 拦截：数据/、导出/ 下的文件；表格与数据文件类型；以及出现在本机 数据/ 里的任何学生姓名。
  * 输出中的姓名一律打码。
  */
@@ -67,9 +68,15 @@ function isBinary(buf) {
 
 // 需要检查的 (路径, 读取内容) 列表
 function targets() {
-  const mode = process.argv.includes('--push') ? 'push' : process.argv.includes('--all') ? 'all' : 'staged';
+  const argv = process.argv;
+  const mode = argv.includes('--message') ? 'message' : argv.includes('--push') ? 'push' : argv.includes('--all') ? 'all' : 'staged';
   const list = [];
-  if (mode === 'staged') {
+  if (mode === 'message') {
+    const file = argv[argv.indexOf('--message') + 1];
+    // 以 # 开头的是 git 的注释行，不会进入提交信息
+    const text = fs.readFileSync(file, 'utf8').split('\n').filter(l => !l.startsWith('#')).join('\n');
+    list.push({ file: '（提交信息）', where: '提交信息', message: true, read: () => Buffer.from(text, 'utf8') });
+  } else if (mode === 'staged') {
     const files = git(['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
     for (const f of files) list.push({ file: f, where: '暂存区', read: () => git(['show', ':' + f]) });
   } else if (mode === 'all') {
@@ -105,11 +112,11 @@ function main() {
   const names = [...collectRealNames()];
   const problems = [];
   for (const t of targets()) {
-    if (BLOCKED_DIRS.some(d => t.file.startsWith(d))) {
+    if (!t.message && BLOCKED_DIRS.some(d => t.file.startsWith(d))) {
       problems.push(`${t.where}：${t.file} 位于真实数据目录`);
       continue;
     }
-    if (BLOCKED_EXT.test(t.file)) {
+    if (!t.message && BLOCKED_EXT.test(t.file)) {
       problems.push(`${t.where}：${t.file} 是表格/数据文件类型`);
       continue;
     }
@@ -119,7 +126,7 @@ function main() {
     const text = buf.toString('utf8');
     const hits = names.filter(n => text.includes(n));
     if (hits.length) {
-      problems.push(`${t.where}：${t.file} 含有真实学生姓名（${hits.slice(0, 5).map(mask).join('、')}${hits.length > 5 ? ` 等 ${hits.length} 个` : ''}）`);
+      problems.push(`${t.where}：${t.message ? '' : t.file + ' '}含有真实学生姓名（${hits.slice(0, 5).map(mask).join('、')}${hits.length > 5 ? ` 等 ${hits.length} 个` : ''}）`);
     }
   }
   if (problems.length) {

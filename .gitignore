@@ -4,6 +4,7 @@
 /*
 !/.gitignore
 !/.githooks/
+!/.github/
 !/README.md
 !/AGENTS.md
 !/CLAUDE.md

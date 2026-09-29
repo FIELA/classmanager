@@ -2,9 +2,10 @@
 /**
  * 从名单/成绩表导入班级（与网页“导入名单”使用同一套识别规则）。
  *
- *   node 辅助资源/tools/import-roster.js [--root 项目目录] [--dry-run] 名单1.xlsx 名单2.xlsx …
+ *   node 辅助资源/tools/import-roster.js [--root 项目目录] [--dry-run] [--yes] 名单1.xlsx 名单2.xlsx …
  *
  * - 同名班级已存在时合并：按姓名对应，更新成绩/性别，新增名单里多出的学生（不会把人标为离班）。
+ * - 同一班级里的同名学生按同一人合并；同名学生出现在不同班级时只提示人数并停止，确认无误后加 --yes 再运行。
  * - 新班级使用默认布局（每排 8 列、4 个大组），之后可在网页“班级设置”里修改。
  * - 写入一个新的会话记录文件，并在 导出/<班级>/ 下新建整理好的名单表。只新建文件，不改动已有文件。
  * - 输出只包含班级与人数，不打印学生姓名。
@@ -23,11 +24,12 @@ const excel = require(path.join(ASSETS, 'excel.js'));
 const { NodeDirHandle } = require('./node-fs-handle.js');
 
 function parseArgs(argv) {
-  const args = { root: path.join(__dirname, '..', '..'), dryRun: false, files: [] };
+  const args = { root: path.join(__dirname, '..', '..'), dryRun: false, yes: false, files: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--root') args.root = argv[++i];
     else if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--yes') args.yes = true;
     else args.files.push(a);
   }
   return args;
@@ -36,7 +38,7 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.files.length) {
-    console.error('用法：node 辅助资源/tools/import-roster.js [--root 项目目录] [--dry-run] 名单.xlsx …');
+    console.error('用法：node 辅助资源/tools/import-roster.js [--root 项目目录] [--dry-run] [--yes] 名单.xlsx …');
     process.exit(2);
   }
   const root = new NodeDirHandle(path.resolve(args.root));
@@ -52,6 +54,8 @@ async function main() {
   const existing = store.listClasses(st);
   let order = existing.reduce((m, c) => Math.max(m, c.order === 999 ? 0 : c.order), 0);
   const plans = [];
+  // 同名学生是否出现在不同班级：先放入各已有班级的在班学生，再放入待导入的名单
+  const clashEntries = existing.map(c => ({ key: c.id, className: c.name, names: store.studentsOf(c).map(s => s.name), incoming: false }));
 
   for (const file of args.files) {
     const buf = fs.readFileSync(file);
@@ -68,8 +72,9 @@ async function main() {
         classId = 'c_' + core.randomId(8);
         op('class.create', { classId, name, order: ++order });
       }
+      clashEntries.push({ key: classId, className: name, names: cand.students.filter(s => s.active !== false).map(s => s.name), incoming: true });
       const current = cls ? store.studentsOf(cls, true) : [];
-      const byName = new Map(current.map(s => [s.name, s]));
+      const byName = core.rosterByName(current);
       cand.students.forEach((s, i) => {
         if (typeof s.score === 'number') plan.withScore++;
         if (s.gender) plan.withGender++;
@@ -78,12 +83,13 @@ async function main() {
         if (s.score !== undefined) fields.score = s.score;
         if (s.rank !== undefined) fields.rank = s.rank;
         if (s.no) fields.no = s.no;
-        fields.seq = typeof s.seq === 'number' ? s.seq : i + 1;
+        if (typeof s.seq === 'number') fields.seq = s.seq;
         const found = byName.get(s.name);
         if (found) {
           op('student.upsert', { classId, studentId: found.id, fields });
           plan.updated++;
         } else {
+          if (!('seq' in fields)) fields.seq = current.length + i + 1; // 与网页导入一致：已有学生不改序号
           fields.active = s.active !== false;
           if (!fields.gender) fields.gender = '';
           op('student.upsert', { classId, studentId: 's_' + core.randomId(8), fields });
@@ -94,6 +100,15 @@ async function main() {
         op('layout.set', { classId, layout: core.defaultLayoutFor(cand.students.length), layoutId: 'l_' + core.randomId(8), base: null });
       }
       plans.push(Object.assign(plan, { classId }));
+    }
+  }
+
+  const clash = core.crossClassNames(clashEntries);
+  if (clash.length) {
+    console.warn(`注意：有 ${clash.length} 个姓名同时出现在不同班级（可能是同一名学生被导入到了两个班）。`);
+    if (!args.dryRun && !args.yes) {
+      console.error('请在网页里核对后，确认无误再加 --yes 重新运行；本次未写入任何内容。');
+      process.exit(1);
     }
   }
 

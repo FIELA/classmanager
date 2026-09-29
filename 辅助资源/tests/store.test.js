@@ -261,3 +261,106 @@ test('模拟器自检：旧做法（两边都改同一个表格文件）会被 S
   await usb.writeText('课堂表现-9.28～10.2.xlsx', 'v2-classroom');
   assert.deepEqual(sync.sync().conflicts, ['课堂表现-9.28～10.2.xlsx']);
 });
+
+test('容错：格式异常的记录只跳过它自己，其余记录照常合并', () => {
+  const ops = [
+    { k: 'class.create', id: 'o1', t: store.tsMake(1, 0, 'a'), classId: 'c1', name: '测试1班' },
+    { k: 'layout.set', id: 'o2', t: store.tsMake(2, 0, 'a'), classId: 'c1', layout: { rows: 2, cols: 4, aisles: '坏数据' }, layoutId: 'l1' },
+    { k: 'student.upsert', id: 'o3', t: store.tsMake(3, 0, 'a'), classId: 'c1', studentId: 's1', fields: { name: '赵测一' } }
+  ];
+  const st = store.reduce(ops);
+  const c = st.classes.get('c1');
+  assert.equal(st.broken, 1);
+  assert.equal(c.layout, null, '异常记录没有留下半截改动');
+  assert.equal(c.conflicts.length, 0);
+  assert.equal(c.students.get('s1').name, '赵测一');
+});
+
+test('定版冲突：同一张导出表先后几次读回算顺序修改；与网页里的修改并行仍算冲突', () => {
+  const base = [{ k: 'class.create', id: 'o1', t: store.tsMake(1, 0, 'a'), classId: 'c1', name: '测试1班' }];
+  const f = (id, t, finalId, baseId, meta) => ({ k: 'final.set', id, t: store.tsMake(t, 0, 'a'), classId: 'c1', finalId, date: '2026-09-28', seats: [], layout: { rows: 1, cols: 1 }, base: baseId, meta });
+  const x = { from: 'excel', exportId: 'e1' };
+  let st = store.reduce(base.concat([f('o2', 2, 'f0', null), f('o3', 3, 'fx1', 'f0', x), f('o4', 4, 'fx2', 'f0', x)]));
+  assert.equal(st.classes.get('c1').conflicts.length, 0);
+  assert.equal(st.classes.get('c1').finals.get('2026-09-28').finalId, 'fx2');
+  st = store.reduce(base.concat([f('o2', 2, 'f0', null), f('o3', 3, 'fw', 'f0', {}), f('o4', 4, 'fx1', 'f0', x)]));
+  assert.equal(st.classes.get('c1').conflicts.length, 1);
+  st = store.reduce(base.concat([f('o2', 2, 'f0', null), f('o3', 3, 'fx1', 'f0', x), f('o4', 4, 'fy1', 'f0', { from: 'excel', exportId: 'e2' })]));
+  assert.equal(st.classes.get('c1').conflicts.length, 1, '两张不同的导出表各自修改仍算冲突');
+});
+
+test('快照：时间超前的快照不再被当成最新并给出提醒；新快照按基准时间命名，之后不会反复重写', async () => {
+  const root = new FakeDir('座次2');
+  const now = new Date(2026, 8, 29, 10, 0, 0).getTime();
+  for (let i = 0; i < 31; i++) {
+    const s = await openSession(root, `s${String(i).padStart(7, '0')}`, { now: () => now - 3600000 + i * 1000 });
+    await s.commit('student.upsert', { classId: 'c1', studentId: `st${i}`, fields: { name: `赵测${i}` } });
+  }
+  await root.writeText('数据/快照/snapshot_2031-01-01_080000_future.json', JSON.stringify({ app: 'classmanager', v: 1, covers: {}, ops: [] }));
+  let read = await store.readProject(root, { now });
+  assert.deepEqual(read.aheadSnapshots, ['snapshot_2031-01-01_080000_future.json']);
+  assert.equal(read.snapshot.name, 'snapshot_2031-01-01_080000_future.json', '只有超前的快照时暂时用它');
+  assert.match(read.warnings.join(''), /时间晚于当前时间/);
+
+  const w = await store.maybeWriteSnapshot(root, read, null, 'zzzzzzzz', false, now);
+  assert.equal(w.ok, true);
+  assert.match(w.name, /^snapshot_2031-01-01_080001_zzzzzzzz\.json$/, '比当前采用的快照晚，下次一定选中它');
+
+  const root2 = new FakeDir('座次2b');
+  for (let i = 0; i < 31; i++) {
+    const s = await openSession(root2, `s${String(i).padStart(7, '0')}`, { now: () => now - 3600000 + i * 1000 });
+    await s.commit('student.upsert', { classId: 'c1', studentId: `st${i}`, fields: { name: `赵测${i}` } });
+  }
+  await root2.writeText('数据/快照/snapshot_2031-01-01_080000_future.json', JSON.stringify({ app: 'classmanager', v: 1, covers: {}, ops: [] }));
+  await root2.writeText('数据/快照/snapshot_2026-09-29_080000_old.json', JSON.stringify({ app: 'classmanager', v: 1, covers: {}, ops: [] }));
+  read = await store.readProject(root2, { now });
+  assert.equal(read.snapshot.name, 'snapshot_2026-09-29_080000_old.json', '有时间正常的快照时优先用它');
+  const w2 = await store.maybeWriteSnapshot(root2, read, null, 'zzzzzzzz', false, now);
+  assert.equal(w2.name, 'snapshot_2026-09-29_100000_zzzzzzzz.json');
+  read = await store.readProject(root2, { now: now + 60000 });
+  assert.equal(read.snapshot.name, w2.name);
+  assert.equal(read.files.filter(f => !f.covered).length, 0);
+  const again = await store.maybeWriteSnapshot(root2, read, null, 'yyyyyyyy', false, now + 60000);
+  assert.equal(again.skipped, true, '不会每次打开都再写一份快照');
+});
+
+test('网络时间：依次尝试各个来源，按往返时间折中算出偏差；都失败时返回 null', async () => {
+  assert.equal(store.parseIsoUtc('2026-09-29T02:00:00.1234567'), Date.UTC(2026, 8, 29, 2, 0, 0, 123));
+  assert.equal(store.parseIsoUtc('2026-09-29T02:00:00.5+00:00'), Date.UTC(2026, 8, 29, 2, 0, 0, 500));
+  assert.equal(store.parseIsoUtc('2026-09-29T10:00:00+0800'), Date.UTC(2026, 8, 29, 2, 0, 0));
+  assert.ok(Number.isNaN(store.parseIsoUtc('昨天')));
+
+  const net = Date.UTC(2026, 8, 29, 2, 0, 0);
+  let local = net - 10 * 60000 - 400; // 本机慢 10 分钟；前两个来源各耗去 200 毫秒
+  const calls = [];
+  const fetchFn = async url => {
+    calls.push(url);
+    local += 200; // 往返 200 毫秒，服务器在中间时刻给出时间
+    if (url.indexOf('worldtimeapi') >= 0) throw new Error('网络不通');
+    if (url.indexOf('timeapi.io') >= 0) return { ok: true, text: async () => JSON.stringify({ dateTime: '1970-01-01T00:00:00' }) };
+    return { ok: true, text: async () => `fl=1\nts=${(net + 100) / 1000}\nvisit_scheme=https\n` };
+  };
+  const r = await store.fetchNetTime(fetchFn, { now: () => local });
+  assert.equal(calls.length, 3, '失败和时间不合理的来源都会跳过');
+  assert.equal(r.source, 'cloudflare.com');
+  assert.equal(r.offset, 10 * 60000);
+
+  assert.equal(await store.fetchNetTime(async () => { throw new Error('离线'); }), null);
+  assert.equal(await store.fetchNetTime(async () => ({ ok: false, status: 403 })), null);
+});
+
+test('会话写入：记录头可以在第一次写入时才生成', async () => {
+  const root = new FakeDir('座次2');
+  const clock = store.createClock('lazy0001', () => 5000);
+  let made = 0;
+  const writer = new store.SessionWriter({ root, sid: 'lazy0001', header: () => { made++; return store.makeHeader('lazy0001', clock, { place: 'win' }); } });
+  assert.equal(made, 0);
+  writer.add({ k: 'class.create', id: 'lazy0001.1', t: clock.now(), s: 'lazy0001', classId: 'c1', name: '测试1班' });
+  assert.equal((await writer.flush()).ok, true);
+  writer.add({ k: 'class.update', id: 'lazy0001.2', t: clock.now(), s: 'lazy0001', classId: 'c1', patch: { name: '测试2班' } });
+  assert.equal((await writer.flush()).ok, true);
+  assert.equal(made, 1);
+  const st = await stateOf(root);
+  assert.equal(st.sessions.get('lazy0001').place, 'win');
+  assert.equal(st.classes.get('c1').name, '测试2班');
+});

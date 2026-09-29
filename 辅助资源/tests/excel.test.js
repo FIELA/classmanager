@@ -63,6 +63,7 @@ test('名单导入：性别列多种写法、姓名中的对齐空格、同名�
   assert.equal(g1.warnings.length, 0, '提示按班分别统计，1 班没有问题');
   assert.match(g2.warnings.join(''), /1 人的性别无法识别/);
   assert.match(g2.warnings.join(''), /同名/);
+  assert.deepEqual(g2.students.map(s => [s.name, s.gender, s.no]), [['孙测一', 'F', '004']], '同班同名合并为一人');
 });
 
 test('名单导入：“班级”列的名称原样保留（任意前缀），只有数字时补“班”；缺成绩按班统计', () => {
@@ -252,4 +253,54 @@ test('文件名清理：去掉 Windows 与 U 盘不允许的字符和末尾空�
   assert.equal(excel.safeFileName('高二:1班 '), '高二1班');
   assert.equal(excel.safeFileName('a/b\\c*?'), 'abc');
   assert.equal(excel.safeFileName('...'), '未命名');
+});
+
+test('座次表：同一张导出表先后改两次，第二次读回不会被当成冲突', async () => {
+  const { cls, students } = makeClass(10);
+  const layout = { rows: 2, cols: 6, aisles: [2, 4] };
+  const seats = core.randomSeating(students, layout, [], {}, core.mulberry32(5)).seats;
+  const rec = { finalId: 'f1', date: '2026-09-28', seats, layout, mode: 'random' };
+  const wb = await roundTrip(await excel.createSeatingWorkbook(cls, rec, students, { exportId: 'e9' }));
+  const ws = wb.getWorksheet('学生版');
+  const swap = (i, j) => {
+    const a = excel.seatCell('student', layout, seats[i][0], seats[i][1]);
+    const b = excel.seatCell('student', layout, seats[j][0], seats[j][1]);
+    const v = ws.getCell(a.row, a.col).value;
+    ws.getCell(a.row, a.col).value = ws.getCell(b.row, b.col).value;
+    ws.getCell(b.row, b.col).value = v;
+  };
+  const clock = store.createClock('aaaa0001');
+  const ops = [
+    { k: 'class.create', id: 'o1', t: clock.now(), classId: cls.id, name: cls.name },
+    { k: 'final.set', id: 'o2', t: clock.now(), classId: cls.id, finalId: 'f1', date: rec.date, seats, layout }
+  ];
+  swap(0, 1);
+  (await excel.readExportEdits(await wb.xlsx.writeBuffer(), 'a.xlsx', ctxFor(cls, students))).ops.forEach(o => ops.push(Object.assign({}, o, { t: clock.now() })));
+  swap(2, 3);
+  const second = await excel.readExportEdits(await wb.xlsx.writeBuffer(), 'a.xlsx', ctxFor(cls, students));
+  second.ops.forEach(o => ops.push(Object.assign({}, o, { t: clock.now() })));
+  const c = store.reduce(ops).classes.get(cls.id);
+  assert.equal(c.conflicts.length, 0);
+  const now = core.seatsToMap(c.finals.get('2026-09-28').seats);
+  assert.equal(now.get(core.seatKey(seats[0][0], seats[0][1])), seats[1][2]);
+  assert.equal(now.get(core.seatKey(seats[2][0], seats[2][1])), seats[3][2]);
+});
+
+test('名单导入：同一班级里的同名学生按同一人合并，后面的行补充前面的字段', () => {
+  const rows = [
+    ['姓名', '性别', '成绩', '状态'],
+    ['赵测一', '男', '', '离班'],
+    ['钱测一', '女', '90', ''],
+    ['赵测一', '', '88', ''],
+    ['孙测一', '男', '70', '离班'],
+    ['孙测一', '', '', '离班']
+  ];
+  const r = excel.parseRosterRows(rows, { className: '测试1班' });
+  const list = r.groups[0].students;
+  assert.deepEqual(list.map(s => s.name), ['赵测一', '钱测一', '孙测一']);
+  assert.equal(list[0].gender, 'M');
+  assert.equal(list[0].score, 88);
+  assert.notEqual(list[0].active, false, '只要有一行在班就算在班');
+  assert.equal(list[2].active, false);
+  assert.match(r.groups[0].warnings.join(''), /2 组同名学生，已按同一名学生合并/);
 });

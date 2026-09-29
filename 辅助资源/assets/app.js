@@ -15,12 +15,18 @@
 
   const $ = id => document.getElementById(id);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const today = () => core.localISODate();
+  // 项目以网络时间为基准：校时成功后，所有“现在”都按 本机时间 + 偏差 计算；不联网时就是本机时间
+  const nowMs = () => Date.now() + (S.net.offset || 0);
+  const nowDate = () => new Date(nowMs());
+  const today = () => core.localISODate(nowDate());
   const pad2 = n => String(n).padStart(2, '0');
   const HAS_FS = typeof window.showDirectoryPicker === 'function';
   const UA = navigator.userAgent || '';
   const PLACE = /Windows/i.test(UA) ? 'win' : (/Mac OS X|Macintosh/i.test(UA) ? 'mac' : 'web');
   const LS = { outbox: 'classmanager.v1.outbox', ui: 'classmanager.v1.ui', seen: 'classmanager.v1.exportSeen' };
+  const SEEN_LIMIT = 5000; // 记住多少个导出文件的“已读版本”
+  const NET_RECHECK = 30 * 60 * 1000; // 网络校时的间隔
+  const BEHIND_OFFLINE = 60 * 60 * 1000; // 不联网时：已有记录比本机时间晚这么多，提醒本机时间可能偏慢
   const IDB_NAME = 'classmanager-v1';
   const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   const MODE_TEXT = { random: '随机排座', select: '按成绩选座', score: '按成绩自动排', rotate: '轮换', hold: '沿用', adjust: '人工微调' };
@@ -38,7 +44,12 @@
     st: store.emptyState(),
     readResult: null,
     cache: new Map(),
-    exportSeen: new Set(),
+    exportSeen: new Map(), // 导出文件路径 → 已读版本（大小|修改时间）
+    exportFailed: new Map(), // 本次打开网页期间读取失败的版本（下次打开或文件变化后重试）
+    scanning: null,
+    net: { offset: null, source: '', checkedAt: 0, pending: null },
+    foreignMaxWall: 0,
+    dismissed: new Set(),
     notices: [],
     saving: false,
     busy: false,
@@ -149,15 +160,57 @@
      数据：连接、读取、提交、保存
      ========================================================= */
 
+  // 网络校时：成功后更新偏差并刷新提醒；失败时保留上次的结果（没有就按本机时间）
+  function checkNetTime(force) {
+    if (typeof window.fetch !== 'function') return Promise.resolve(null);
+    if (S.net.pending) return S.net.pending;
+    if (!force && S.net.checkedAt && Date.now() - S.net.checkedAt < NET_RECHECK) return Promise.resolve(S.net.offset);
+    const done = r => {
+      S.net.pending = null;
+      S.net.checkedAt = Date.now();
+      if (r) { S.net.offset = r.offset; S.net.source = r.source; }
+      renderAlerts();
+      if (S.root && S.ui.tab === 'seating' && S.ui.mode === 'scoring') renderScoringBar(currentClass());
+      $('today-tag').textContent = today();
+      return S.net.offset;
+    };
+    S.net.pending = store.fetchNetTime(window.fetch.bind(window), { timeout: 4000 }).then(done, () => done(null));
+    return S.net.pending;
+  }
+
+  function fmtSpan(ms) {
+    const m = Math.round(Math.abs(ms) / 60000);
+    if (m < 60) return `${m} 分钟`;
+    const h = Math.round(m / 6) / 10;
+    return h < 48 ? `${h} 小时` : `${Math.round(h / 24)} 天`;
+  }
+
+  // 时间状况：system 本机系统时间与网络时间相差太多；ahead 有记录的时间晚于网络时间；behind 不联网时本机时间比已有记录早
+  function clockStatus() {
+    const tol = store.CLOCK_TOLERANCE;
+    const out = { system: 0, ahead: 0, behind: false };
+    if (S.net.offset !== null) {
+      if (Math.abs(S.net.offset) > tol) out.system = S.net.offset;
+      if (S.foreignMaxWall > nowMs() + tol) out.ahead = S.foreignMaxWall;
+    } else if (S.foreignMaxWall - Date.now() > BEHIND_OFFLINE) {
+      out.behind = true;
+    }
+    return out;
+  }
+
   function newSession() {
     S.sid = core.randomId(8);
     S.seq = 0;
-    S.clock = store.createClock(S.sid);
+    S.clock = store.createClock(S.sid, nowMs);
+    const sid = S.sid;
+    const clock = S.clock;
     S.writer = new store.SessionWriter({
       root: S.root,
-      sid: S.sid,
+      sid,
       place: PLACE,
-      header: store.makeHeader(S.sid, S.clock, { place: PLACE, started: core.localDateTime(), ua: shortUA() })
+      startedAt: nowDate(),
+      // 第一次写入时才生成记录头，那时多半已按网络时间校准
+      header: () => store.makeHeader(sid, clock, { place: PLACE, started: core.localDateTime(nowDate()), ua: shortUA() })
     });
   }
 
@@ -185,10 +238,16 @@
   }
 
   async function loadData() {
-    const read = await store.readProject(S.root, { cache: S.cache });
+    const read = await store.readProject(S.root, { cache: S.cache, now: nowMs() });
     S.readResult = read;
     S.projectId = read.project && read.project.projectId ? read.project.projectId : null;
-    read.ops.forEach(o => S.clock.observe(o.t));
+    let foreign = 0;
+    read.ops.forEach(o => {
+      S.clock.observe(o.t);
+      const p = o.s !== S.sid ? store.tsParse(o.t) : null;
+      if (p && p.wall > foreign) foreign = p.wall;
+    });
+    S.foreignMaxWall = foreign;
     S.ops = read.ops.concat(S.writer ? S.writer.ops : []);
     S.st = store.reduce(S.ops);
   }
@@ -237,14 +296,36 @@
     return missing.length;
   }
 
+  // 暂存区：每个会话一个键（classmanager.v1.outbox.会话号），同时打开的几个标签页互不覆盖；也认旧版的单个键
+  const outboxKey = sid => `${LS.outbox}.${sid}`;
+
+  function outboxKeys() {
+    const keys = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k === LS.outbox || (k && k.indexOf(LS.outbox + '.') === 0)) keys.push(k);
+      }
+    } catch (e) { /* 存储不可用 */ }
+    return keys;
+  }
+
   async function recoverOutbox() {
-    let box = null;
-    try { box = JSON.parse(localStorage.getItem(LS.outbox) || 'null'); } catch (e) { box = null; }
-    if (!box || box.sid === S.sid || !Array.isArray(box.ops)) return;
-    const n = await adoptOps(box.ops, box.project, `浏览器暂存区（${box.folder || '未知文件夹'}）`);
-    if (!n) {
+    for (const key of outboxKeys()) {
+      if (key === outboxKey(S.sid)) continue;
+      let box = null;
+      try { box = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { box = null; }
+      if (!box || !Array.isArray(box.ops)) {
+        try { localStorage.removeItem(key); } catch (e) { /* 忽略 */ }
+        continue;
+      }
+      if (box.sid === S.sid) continue;
+      await adoptOps(box.ops, box.project, `浏览器暂存区（${box.folder || '未知文件夹'}）`);
+      // 全部已在当前数据里（本次补存成功，或别处早已写入）才删掉这份暂存
       const still = box.ops.filter(o => o && o.id && !S.st.ids.has(o.id));
-      if (!still.length) localStorage.removeItem(LS.outbox);
+      if (!still.length) {
+        try { localStorage.removeItem(key); } catch (e) { /* 忽略 */ }
+      }
     }
   }
 
@@ -252,12 +333,8 @@
     if (!S.writer) return;
     const pending = S.writer.ops.slice(S.writer.written);
     try {
-      if (!pending.length) {
-        const box = JSON.parse(localStorage.getItem(LS.outbox) || 'null');
-        if (!box || box.sid === S.sid) localStorage.removeItem(LS.outbox);
-      } else {
-        localStorage.setItem(LS.outbox, JSON.stringify({ project: S.projectId, folder: S.rootName, sid: S.sid, ops: pending }));
-      }
+      if (!pending.length) localStorage.removeItem(outboxKey(S.sid));
+      else localStorage.setItem(outboxKey(S.sid), JSON.stringify({ project: S.projectId, folder: S.rootName, sid: S.sid, ops: pending }));
     } catch (e) { /* 存储不可用时只能依赖文件夹 */ }
   }
 
@@ -266,7 +343,9 @@
     S.ops.push(op);
     if (!S.st.ids.has(op.id)) {
       S.st.ids.add(op.id);
-      if (store.applyOp(S.st, op)) S.st.opCount++;
+      const r = store.safeApply(S.st, op);
+      if (r.ok) S.st.opCount++;
+      if (r.broken) S.st.broken++;
       if (op.t > S.st.maxT) S.st.maxT = op.t;
     }
   }
@@ -306,22 +385,45 @@
 
   async function backgroundTasks() {
     if (!S.root) return;
-    try {
-      const w = await store.maybeWriteSnapshot(S.root, S.readResult, S.writer.fileName, S.sid, false);
-      if (w && w.ok && !w.skipped) S.readResult = await store.readProject(S.root, { cache: S.cache });
-    } catch (e) { /* 快照只是加速，失败不影响使用 */ }
     await scanExports();
+    await checkNetTime();
+    if (!S.root) return;
+    try {
+      // 按校准后的时间重新判断该用哪个快照，再决定要不要写新快照
+      S.readResult = await store.readProject(S.root, { cache: S.cache, now: nowMs() });
+      const w = await store.maybeWriteSnapshot(S.root, S.readResult, S.writer.fileName, S.sid, false, nowMs());
+      if (w && w.ok && !w.skipped) S.readResult = await store.readProject(S.root, { cache: S.cache, now: nowMs() });
+    } catch (e) { /* 快照只是加速，失败不影响使用 */ }
+    renderAlerts();
   }
 
   // 检查“导出/”里被老师改过的 Excel，把改动写成记录。
-  // 每个文件版本（路径 + 大小 + 修改时间）只读一次；本网页刚写出的版本直接记为已读。
+  // 每个文件记住最后读过的版本（大小 + 修改时间），只有版本变了才再读；本网页刚写出的版本直接记为已读。
   function loadSeen() {
-    try { (JSON.parse(localStorage.getItem(LS.seen) || '[]') || []).forEach(k => S.exportSeen.add(k)); } catch (e) { /* 忽略 */ }
+    try {
+      const v = JSON.parse(localStorage.getItem(LS.seen) || 'null');
+      if (Array.isArray(v)) {
+        // 旧格式：[“路径|大小|修改时间”, …]
+        v.forEach(k => {
+          const i = String(k).lastIndexOf('|');
+          const j = i > 0 ? String(k).lastIndexOf('|', i - 1) : -1;
+          if (j > 0) S.exportSeen.set(k.slice(0, j), k.slice(j + 1));
+        });
+      } else if (v && typeof v === 'object') {
+        Object.keys(v).forEach(p => { if (typeof v[p] === 'string') S.exportSeen.set(p, v[p]); });
+      }
+    } catch (e) { /* 忽略 */ }
   }
 
-  function markSeen(key) {
-    S.exportSeen.add(key);
-    try { localStorage.setItem(LS.seen, JSON.stringify(Array.from(S.exportSeen).slice(-500))); } catch (e) { /* 忽略 */ }
+  function markSeen(path, sig) {
+    S.exportSeen.delete(path); // 重新插入，最近读过的排在最后
+    S.exportSeen.set(path, sig);
+    while (S.exportSeen.size > SEEN_LIMIT) S.exportSeen.delete(S.exportSeen.keys().next().value);
+    try {
+      const o = {};
+      S.exportSeen.forEach((v, k) => { o[k] = v; });
+      localStorage.setItem(LS.seen, JSON.stringify(o));
+    } catch (e) { /* 忽略 */ }
   }
 
   function classCtx(classId) {
@@ -330,7 +432,13 @@
     return { cls, students: store.studentsOf(cls, true), items: store.itemsOf(S.st) };
   }
 
-  async function scanExports() {
+  // 同一时间只扫描一次（连接后与回到页面可能同时触发）
+  function scanExports() {
+    if (!S.scanning) S.scanning = scanExportsOnce().then(() => { S.scanning = null; }, () => { S.scanning = null; });
+    return S.scanning;
+  }
+
+  async function scanExportsOnce() {
     if (!S.root) return;
     let dir;
     try { dir = await store.getSubDir(S.root, store.EXPORT_DIR, false); } catch (e) { return; }
@@ -351,11 +459,12 @@
     for (const f of files) {
       let file;
       try { file = await f.handle.getFile(); } catch (e) { continue; }
-      const key = `${f.path}|${file.size}|${file.lastModified}`;
-      if (S.exportSeen.has(key)) continue;
-      markSeen(key);
+      const sig = `${file.size}|${file.lastModified}`;
+      if (S.exportSeen.get(f.path) === sig || S.exportFailed.get(f.path) === sig) continue;
       try {
         const res = await xl.readExportEdits(await file.arrayBuffer(), f.handle.name, classCtx);
+        markSeen(f.path, sig);
+        S.exportFailed.delete(f.path);
         if (!res) continue;
         const fresh = res.ops.filter(o => !S.st.ids.has(o.id));
         if (fresh.length) {
@@ -365,6 +474,8 @@
         }
         if (res.warnings.length) S.notices.push({ level: 'warn', text: `⚠ Excel“${f.handle.name}”：${res.warnings.join('；')}` });
       } catch (e) {
+        // 可能是 Excel/WPS 正在保存：本次不再重复提示，文件变化或下次打开网页时重试
+        S.exportFailed.set(f.path, sig);
         S.notices.push({ level: 'warn', text: `⚠ 读取“${f.path}”失败：${e.message}` });
       }
     }
@@ -391,6 +502,7 @@
       return;
     }
     S.busy = false;
+    checkNetTime();
     await scanExports();
     if (`${S.st.maxT}|${S.st.opCount}` !== before) renderAll();
   }
@@ -443,8 +555,9 @@
     return all.length ? Object.assign({ kind: 'final' }, all[all.length - 1]) : null;
   }
 
-  function clockBehind() {
-    return S.clock && S.clock.maxWall() - Date.now() > 12 * 3600 * 1000;
+  function clockSuspect() {
+    const ck = clockStatus();
+    return !!(ck.system || ck.behind);
   }
 
   function weekTotals(cls, week) {
@@ -586,8 +699,26 @@
     if (S.root && S.writer && S.writer.lastError && S.writer.pendingCount()) {
       items.push({ level: 'error', html: `⚠ 有 <b>${S.writer.pendingCount()}</b> 条修改还没保存到文件夹：${esc(S.writer.lastError)}。修改暂存在浏览器里；插好 U 盘或关闭占用文件的程序后点“重试”。`, act: 'retry', actText: '重试保存' });
     }
-    if (S.root && clockBehind()) {
-      items.push({ level: 'warn', html: `⚠ 这台电脑的时间（${esc(core.localDateTime())}）比已有记录还早，可能不准。记分前请核对“记分日期”。` });
+    const ck = S.root ? clockStatus() : { system: 0, ahead: 0, behind: false };
+    if (ck.system) {
+      items.push({
+        level: 'warn',
+        html: `⚠ 这台电脑的系统时间比网络时间${ck.system > 0 ? '慢' : '快'}约 ${fmtSpan(ck.system)}（本机 ${esc(core.localDateTime(new Date()))}，网络 ${esc(core.localDateTime(nowDate()))}）。` +
+          '网页已按网络时间记录；请校准系统时间（Windows：设置 → 时间和语言 → 立即同步）。'
+      });
+    }
+    if (ck.ahead && !S.dismissed.has('clock-ahead')) {
+      items.push({
+        level: 'warn',
+        html: `⚠ 有记录的时间（最晚 ${esc(core.localDateTime(new Date(ck.ahead)))}）晚于网络时间 ${esc(core.localDateTime(nowDate()))}，可能来自系统时间超前的电脑。数据合并不受影响，但请检查各台电脑的系统时间。`,
+        act: 'dismiss-flag', actText: '知道了', data: 'clock-ahead'
+      });
+    }
+    if (ck.behind) {
+      items.push({ level: 'warn', html: `⚠ 这台电脑的时间（${esc(core.localDateTime(new Date()))}）比已有记录还早，可能不准（未能连网校时）。记分前请核对“记分日期”。` });
+    }
+    if (S.root && S.st.broken) {
+      items.push({ level: 'info', html: `ℹ 有 ${S.st.broken} 条记录格式异常（可能是手工改动或文件不完整），已跳过，其余数据正常。` });
     }
     const cls = S.root ? currentClass() : null;
     if (cls) {
@@ -1071,7 +1202,7 @@
     $('items-penalty-2').innerHTML = items.filter(i => i.value < 0 && i.row === 2).map(btn).join('');
     const dateInput = $('score-date');
     if (!dateInput.value) dateInput.value = S.scoring.date || today();
-    $('score-date-warn').textContent = clockBehind() ? '电脑时间可能不准，请核对日期' : (dateInput.value !== today() ? '注意：不是今天' : '');
+    $('score-date-warn').textContent = clockSuspect() ? '电脑时间可能不准，请核对日期' : (dateInput.value !== today() ? '注意：不是今天' : '');
     $('score-item-name').textContent = cur ? `${cur.name}（${core.fmtScore(cur.value)}）` : '未选择';
     const { names } = studentMaps(cls);
     const sel = Array.from(S.scoring.sel);
@@ -1570,7 +1701,7 @@
   async function writeExport(dirName, base, buf) {
     const res = await store.writeNewFile(S.root, [store.EXPORT_DIR, dirName], base, '.xlsx', buf);
     if (res.ok) {
-      markSeen(`${dirName}/${res.name}|${res.size}|${res.lastModified}`);
+      markSeen(`${dirName}/${res.name}`, `${res.size}|${res.lastModified}`);
       toast(`已导出：${res.path}`, '', 6000);
     }
     else {
@@ -1589,7 +1720,7 @@
         exportId: 'e_' + core.randomId(10),
         title: `座次表-${cls.name}-${core.weekSpan(rec.date)}${rec.finalId ? '' : '（候选）'}`
       });
-      await writeExport(dir, `座次表-${dir}-${core.weekSpan(rec.date)}-${tag}-${xl.exportStamp()}`, await wb.xlsx.writeBuffer());
+      await writeExport(dir, `座次表-${dir}-${core.weekSpan(rec.date)}-${tag}-${xl.exportStamp(nowDate())}`, await wb.xlsx.writeBuffer());
     } catch (e) {
       showError('导出座次表失败：' + e.message);
     }
@@ -1622,7 +1753,7 @@
     if (!sc.sel.size) { showError('请在座次表中点选至少 1 名学生'); return; }
     const date = $('score-date').value;
     if (!core.isISODate(date)) { showError('记分日期不对'); return; }
-    const now = new Date();
+    const now = nowDate();
     const time = `${date} ${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
     const recIds = [];
     const names = [];
@@ -1738,7 +1869,7 @@
         title: `课堂表现-${cls.name}-${label}`,
         defaultDate: sel === 'all' ? today() : sel
       });
-      await writeExport(dir, `课堂表现-${dir}-${label}-${xl.exportStamp()}`, await wb.xlsx.writeBuffer());
+      await writeExport(dir, `课堂表现-${dir}-${label}-${xl.exportStamp(nowDate())}`, await wb.xlsx.writeBuffer());
     } catch (e) {
       showError('导出失败：' + e.message);
     }
@@ -1863,6 +1994,18 @@
     const name = core.normalizeName(prompt('新学生的姓名：') || '');
     if (!name) return;
     const all = store.studentsOf(cls, true);
+    // 同一班级里同名视为同一人：已在班就不再添加；已离班则可恢复
+    const same = core.rosterByName(all).get(name);
+    if (same && same.active !== false) { showError(`本班已有“${name}”`); return; }
+    if (same) {
+      if (!confirm(`本班已有离班学生“${name}”，要把这名学生恢复为在班吗？`)) return;
+      commit('student.upsert', { classId: cls.id, studentId: same.id, fields: { active: true } });
+      renderAll();
+      toast(`已把 ${name} 恢复为在班`);
+      return;
+    }
+    const clash = core.crossClassNames(otherClassEntries([cls.id]).concat([{ key: cls.id, className: cls.name, names: [name], incoming: true }]));
+    if (clash.length && !confirm(`“${name}”已在${clash[0].classes.filter(n => n !== cls.name).join('、')}中。\n确定要在 ${cls.name} 再添加一名同名学生吗？`)) return;
     const seq = all.reduce((m, s) => Math.max(m, typeof s.seq === 'number' ? s.seq : 0), 0) + 1;
     commit('student.upsert', { classId: cls.id, studentId: 's_' + core.randomId(8), fields: { name, gender: '', score: null, seq, active: true } });
     renderAll();
@@ -2047,7 +2190,7 @@
     try {
       const dir = xl.safeFileName(cls.name);
       const wb = await xl.createRosterWorkbook(cls, store.studentsOf(cls, true), { exportId: 'e_' + core.randomId(10) });
-      await writeExport(dir, `名单-${dir}-${xl.exportStamp()}`, await wb.xlsx.writeBuffer());
+      await writeExport(dir, `名单-${dir}-${xl.exportStamp(nowDate())}`, await wb.xlsx.writeBuffer());
     } catch (e) {
       showError('导出名单失败：' + e.message);
     }
@@ -2145,8 +2288,27 @@
     if (el.dataset.role === 'markLeft') c.markLeft = el.checked;
   }
 
+  // 除 skipIds 以外各班的在班学生姓名（用于检查同名学生是否出现在不同班级）
+  function otherClassEntries(skipIds) {
+    return classes().filter(c => skipIds.indexOf(c.id) < 0)
+      .map(c => ({ key: c.id, className: c.name, names: store.studentsOf(c).map(s => s.name), incoming: false }));
+  }
+
   function confirmImport() {
     if (!S.importCands.length) return;
+    // 同名学生：同一班级合并为一人；出现在不同班级时先请老师确认
+    const targets = S.importCands.map((c, i) => (c.target === 'new' ? `new:${i}` : c.target));
+    const entries = otherClassEntries([]).concat(S.importCands.map((c, i) => ({
+      key: targets[i],
+      className: c.target === 'new' ? (c.name || '新班级') : S.st.classes.get(c.target).name,
+      names: c.students.filter(s => s.active !== false).map(s => s.name),
+      incoming: true
+    })));
+    const clash = core.crossClassNames(entries);
+    if (clash.length) {
+      const lines = clash.slice(0, 8).map(x => `${x.name}（${x.classes.join('、')}）`).join('\n');
+      if (!confirm(`有 ${clash.length} 个姓名同时出现在不同班级：\n${lines}${clash.length > 8 ? '\n…' : ''}\n\n可能是同一名学生被导入到了两个班。仍要继续导入吗？`)) return;
+    }
     let firstId = null;
     let total = 0;
     for (const c of S.importCands) {
@@ -2161,7 +2323,7 @@
       } else {
         current = store.studentsOf(S.st.classes.get(classId), true);
       }
-      const byName = new Map(current.map(s => [s.name, s]));
+      const byName = core.rosterByName(current);
       const seen = new Set();
       c.students.forEach((s, i) => {
         const fields = { name: s.name };
@@ -2172,7 +2334,8 @@
         if (typeof s.seq === 'number') fields.seq = s.seq;
         const found = byName.get(s.name);
         if (found) {
-          seen.add(found.id);
+          // 本班所有同名记录都算对上了，不会被“标为离班”误伤
+          current.forEach(x => { if (x.name === s.name) seen.add(x.id); });
           if (s.active !== false && found.active === false) fields.active = true;
           commit('student.upsert', { classId, studentId: found.id, fields }, { noFlush: true });
         } else {
@@ -2203,6 +2366,7 @@
     const cls = currentClass();
     if (act === 'retry') { flushNow().then(r => { if (r.ok) toast('已保存'); else showError('仍然没保存成功：' + r.error); }); return; }
     if (act === 'dismiss') { S.notices.splice(Number(arg), 1); renderAlerts(); return; }
+    if (act === 'dismiss-flag') { S.dismissed.add(arg); renderAlerts(); return; }
     if (!cls) return;
     const parts = String(arg).split('|');
     const cf = cls.conflicts.find(x => x.kind === parts[0] && x.key === parts[1]);
@@ -2440,6 +2604,7 @@
     loadSeen();
     bind();
     renderAll();
+    checkNetTime();
     if (!HAS_FS) return;
     const h = await idbGet('root');
     if (!h) return;

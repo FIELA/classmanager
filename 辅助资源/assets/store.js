@@ -20,6 +20,7 @@
   const EXPORT_DIR = '导出';
   const PROJECT_FILE = 'project.json';
   const SNAPSHOT_AFTER = 30; // 未被快照覆盖的记录文件达到这么多时，写一个新快照
+  const CLOCK_TOLERANCE = 5 * 60 * 1000; // 时间误差容忍：超过这么多才算“超前”或“系统时间异常”
 
   // 系统与临时文件：一律忽略（._ 是 Mac 写 U 盘时的附属文件，~$ 是 Office 锁文件，.crswap 是浏览器写入中的临时文件）
   function isJunkName(n) {
@@ -74,6 +75,64 @@
   }
 
   /* =========================================================
+     网络时间：项目以网络时间为基准。依次尝试几个公开的时间服务（只发一个 GET 请求，不带任何数据），
+     第一个成功的结果即为基准；都失败（教室电脑不联网）时返回 null，退回本机时间。
+     ========================================================= */
+
+  // ISO 时间 → 毫秒；小数秒截到 3 位；没有时区的按 UTC
+  function parseIsoUtc(s) {
+    const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$/.exec(String(s || '').trim());
+    if (!m) return NaN;
+    const frac = m[2] ? '.' + (m[2] + '00').slice(0, 3) : '';
+    let zone = m[3] || 'Z';
+    if (/^[+-]\d{4}$/.test(zone)) zone = zone.slice(0, 3) + ':' + zone.slice(3);
+    return Date.parse(m[1] + frac + zone);
+  }
+
+  const TIME_SOURCES = [
+    { name: 'worldtimeapi.org', url: 'https://worldtimeapi.org/api/timezone/Etc/UTC', parse: t => parseIsoUtc(JSON.parse(t).utc_datetime) },
+    { name: 'timeapi.io', url: 'https://timeapi.io/api/Time/current/zone?timeZone=UTC', parse: t => parseIsoUtc(JSON.parse(t).dateTime) },
+    {
+      name: 'cloudflare.com',
+      url: 'https://www.cloudflare.com/cdn-cgi/trace',
+      parse: t => {
+        const m = /(?:^|\n)ts=(\d+(?:\.\d+)?)/.exec(t);
+        return m ? Math.round(Number(m[1]) * 1000) : NaN;
+      }
+    }
+  ];
+
+  const plausibleTime = ms => Number.isFinite(ms) && ms > Date.UTC(2020, 0, 1) && ms < Date.UTC(2100, 0, 1);
+
+  // 返回 { offset: 网络时间 − 本机时间（毫秒）, source, rtt }；全部失败返回 null
+  async function fetchNetTime(fetchFn, opts) {
+    opts = opts || {};
+    const nowFn = opts.now || Date.now;
+    const timeout = opts.timeout || 4000;
+    const sources = opts.sources || TIME_SOURCES;
+    if (typeof fetchFn !== 'function') return null;
+    for (const src of sources) {
+      const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), timeout) : null;
+      try {
+        const t0 = nowFn();
+        const resp = await fetchFn(src.url, { cache: 'no-store', credentials: 'omit', signal: ctrl ? ctrl.signal : undefined });
+        if (!resp || !resp.ok) throw new Error('HTTP ' + (resp && resp.status));
+        const text = await resp.text();
+        const t1 = nowFn();
+        const net = src.parse(text);
+        if (!plausibleTime(net) || t1 - t0 > timeout) throw new Error('时间无效');
+        return { offset: Math.round(net + (t1 - t0) / 2 - t1), source: src.name, rtt: t1 - t0 };
+      } catch (e) {
+        /* 换下一个来源 */
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    return null;
+  }
+
+  /* =========================================================
      合并：按时间戳排序、按编号去重，逐条应用
      ========================================================= */
 
@@ -89,7 +148,8 @@
       ids: new Set(),
       maxT: '',
       opCount: 0,
-      skipped: 0
+      skipped: 0,
+      broken: 0
     };
   }
 
@@ -193,13 +253,14 @@
       }
       case 'layout.set': {
         if (!cls || !op.layout) return false;
+        const layout = core.normalizeLayout(op.layout); // 先整理，格式异常时在改动状态之前就出错
         if (cls.layoutId && op.base !== cls.layoutId && op.layoutId !== cls.layoutId) {
           dropConflict(cls, 'layout', 'layout');
           cls.conflicts.push({ kind: 'layout', key: 'layout', winnerId: op.layoutId, loser: { layoutId: cls.layoutId, layout: cls.layout }, t: op.t });
         } else {
           dropConflict(cls, 'layout', 'layout');
         }
-        cls.layout = core.normalizeLayout(op.layout);
+        cls.layout = layout;
         cls.layoutId = str(op.layoutId) || null;
         return true;
       }
@@ -229,14 +290,7 @@
       case 'final.set': {
         if (!cls || !op.finalId || !core.isISODate(op.date)) return false;
         const week = core.mondayOf(op.date);
-        const prev = cls.finals.get(week);
-        if (prev && op.finalId !== prev.finalId && op.base !== prev.finalId) {
-          dropConflict(cls, 'final', week);
-          cls.conflicts.push({ kind: 'final', key: week, winnerId: op.finalId, loser: prev, t: op.t });
-        } else if (prev) {
-          dropConflict(cls, 'final', week);
-        }
-        cls.finals.set(week, {
+        const rec = {
           finalId: op.finalId,
           week,
           date: op.date,
@@ -247,7 +301,15 @@
           base: op.base || null,
           t: op.t,
           session: op.s
-        });
+        };
+        const prev = cls.finals.get(week);
+        if (prev && op.finalId !== prev.finalId && op.base !== prev.finalId && !sameExcelExport(prev, op)) {
+          dropConflict(cls, 'final', week);
+          cls.conflicts.push({ kind: 'final', key: week, winnerId: op.finalId, loser: prev, t: op.t });
+        } else if (prev) {
+          dropConflict(cls, 'final', week);
+        }
+        cls.finals.set(week, rec);
         return true;
       }
       case 'passage.config.set': {
@@ -352,6 +414,22 @@
     }
   }
 
+  // 同一张导出表先后几次读回的修改是顺序修改，不算两份各自保存的版本
+  function sameExcelExport(prev, op) {
+    const a = prev.meta || {};
+    const b = op.meta || {};
+    return a.from === 'excel' && b.from === 'excel' && !!a.exportId && a.exportId === b.exportId;
+  }
+
+  // 应用一条记录；格式异常（手改、残缺副本、新版本改了字段格式）时跳过，不影响其余记录
+  function safeApply(st, op) {
+    try {
+      return { ok: applyOp(st, op), broken: false };
+    } catch (e) {
+      return { ok: false, broken: true };
+    }
+  }
+
   function compareOps(a, b) {
     if (a.t !== b.t) return a.t < b.t ? -1 : 1;
     if (a.id !== b.id) return a.id < b.id ? -1 : 1;
@@ -364,8 +442,10 @@
     for (const op of sorted) {
       if (st.ids.has(op.id)) continue;
       st.ids.add(op.id);
-      if (applyOp(st, op)) st.opCount++;
+      const r = safeApply(st, op);
+      if (r.ok) st.opCount++;
       else st.skipped++;
+      if (r.broken) st.broken++;
       if (op.t > st.maxT) st.maxT = op.t;
     }
     return st;
@@ -581,11 +661,21 @@
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
   }
 
+  // 快照文件名里的时间（本地时间）：snapshot_2026-09-29_153000_会话号.json；认不出返回 null
+  function snapshotTime(name) {
+    const m = /^snapshot_(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})(\d{2})_/.exec(name || '');
+    if (!m) return null;
+    const ms = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+
   // 读取整个项目：快照 + 未被快照覆盖的记录文件
+  // opts.now：作为基准的当前时间（毫秒，最好是网络时间）；时间晚于它的快照算“超前”，只在没有正常快照时才用
   async function readProject(root, opts) {
     opts = opts || {};
     const cache = opts.cache || new Map();
-    const res = { ops: [], files: [], snapshot: null, project: null, hasDataDir: false, badLines: 0, warnings: [] };
+    const now = typeof opts.now === 'number' ? opts.now : Date.now();
+    const res = { ops: [], files: [], snapshot: null, project: null, hasDataDir: false, badLines: 0, aheadSnapshots: [], warnings: [] };
     const dataDir = await getSubDir(root, DATA_DIR, false);
     if (!dataDir) return res;
     res.hasDataDir = true;
@@ -598,10 +688,19 @@
     let covers = new Map();
     const snapDir = await getSubDir(dataDir, SNAP_DIR, false);
     if (snapDir) {
-      const snaps = (await listEntries(snapDir))
+      const all = (await listEntries(snapDir))
         .filter(e => e.kind === 'file' && !isJunkName(e.name) && /\.json$/i.test(e.name))
-        .sort((a, b) => (a.name < b.name ? 1 : -1));
-      for (const e of snaps) {
+        .map(e => ({ e, time: snapshotTime(e.name) }));
+      const newestFirst = (a, b) => ((b.time || 0) - (a.time || 0)) || (a.e.name < b.e.name ? 1 : -1);
+      const ahead = all.filter(x => x.time !== null && x.time > now + CLOCK_TOLERANCE).sort(newestFirst);
+      const normal = all.filter(x => ahead.indexOf(x) < 0).sort(newestFirst);
+      res.aheadSnapshots = ahead.map(x => x.e.name);
+      if (ahead.length) {
+        res.warnings.push(`有 ${ahead.length} 个快照（如“${ahead[0].e.name}”）的时间晚于当前时间 ${core.localDateTime(new Date(now))}，` +
+          `可能由系统时间超前的电脑写入，或本机时间偏慢；${normal.length ? '已改用时间正常的快照' : '暂时使用其中最新的一个'}。快照只用于加速，可以手动删除`);
+      }
+      for (const x of normal.concat(ahead)) {
+        const e = x.e;
         try {
           const f = await e.getFile();
           const key = `snap|${e.name}|${f.size}|${f.lastModified}`;
@@ -613,7 +712,7 @@
           if (!snap || snap.app !== APP || !Array.isArray(snap.ops) || !snap.covers) throw new Error('格式不对');
           for (const op of snap.ops) res.ops.push(op);
           covers = new Map(Object.keys(snap.covers).map(k => [k, snap.covers[k]]));
-          res.snapshot = { name: e.name, covers: covers.size };
+          res.snapshot = { name: e.name, covers: covers.size, time: x.time };
           break;
         } catch (err) {
           res.warnings.push(`快照“${e.name}”无法读取，已改用原始记录`);
@@ -651,16 +750,19 @@
     return res;
   }
 
-  // 写快照（新文件）：覆盖除本会话外的全部记录文件
-  async function maybeWriteSnapshot(root, readResult, ownFileName, sid, force) {
+  // 写快照（新文件）：覆盖除本会话外的全部记录文件。
+  // 文件名按基准时间 nowMs（最好是网络时间），且一定晚于当前采用的快照，下次读取时会选中它，不会反复重写
+  async function maybeWriteSnapshot(root, readResult, ownFileName, sid, force, nowMs) {
     const uncovered = readResult.files.filter(f => !f.covered && f.name !== ownFileName);
     if (!force && uncovered.length < SNAPSHOT_AFTER) return { ok: true, skipped: true };
     const covers = {};
     readResult.files.forEach(f => { if (f.name !== ownFileName) covers[f.name] = f.size; });
     const ownSid = sid;
     const ops = readResult.ops.filter(o => o.s !== ownSid);
-    const body = JSON.stringify({ app: APP, v: FORMAT, created: core.localDateTime(), covers, ops });
-    return writeNewFile(root, [DATA_DIR, SNAP_DIR], `snapshot_${stamp(new Date())}_${sid}`, '.json', body);
+    const prev = readResult.snapshot && typeof readResult.snapshot.time === 'number' ? readResult.snapshot.time + 1000 : 0;
+    const when = new Date(Math.max(typeof nowMs === 'number' ? nowMs : Date.now(), prev));
+    const body = JSON.stringify({ app: APP, v: FORMAT, created: core.localDateTime(when), covers, ops });
+    return writeNewFile(root, [DATA_DIR, SNAP_DIR], `snapshot_${stamp(when)}_${sid}`, '.json', body);
   }
 
   /* =========================================================
@@ -672,7 +774,7 @@
       this.root = opts.root;
       this.sid = opts.sid;
       this.place = opts.place || 'web';
-      this.header = opts.header;
+      this.header = opts.header; // 记录头；可以是函数，第一次写入时才生成（那时多半已校准网络时间）
       this.startedAt = opts.startedAt || new Date();
       this.fileName = null;
       this.ops = [];
@@ -700,6 +802,7 @@
       const count = this.ops.length;
       try {
         const dataDir = await getSubDir(this.root, DATA_DIR, true);
+        if (typeof this.header === 'function') this.header = this.header();
         if (!this.fileName) this.fileName = await uniqueName(dataDir, `${stamp(this.startedAt)}_${this.place}_${this.sid}`, '.jsonl');
         const res = await writeFileChecked(dataDir, this.fileName, serializeOps([this.header].concat(this.ops.slice(0, count))));
         if (!res.ok) throw new Error(res.error);
@@ -718,14 +821,15 @@
   }
 
   const CMStore = {
-    APP, FORMAT, DATA_DIR, SNAP_DIR, EXPORT_DIR, PROJECT_FILE, SNAPSHOT_AFTER,
+    APP, FORMAT, DATA_DIR, SNAP_DIR, EXPORT_DIR, PROJECT_FILE, SNAPSHOT_AFTER, CLOCK_TOLERANCE,
     isJunkName, tsMake, tsParse, createClock,
-    emptyState, applyOp, reduce, compareOps,
+    TIME_SOURCES, parseIsoUtc, fetchNetTime,
+    emptyState, applyOp, safeApply, reduce, compareOps,
     listClasses, studentsOf, layoutOf, finalsOf, effectiveFinal, sourceFinalFor, scoresOf, itemsOf,
     parseJsonl, serializeOps,
     describeError, getSubDir, getDirPath, fileExists, listEntries, writeFileChecked, uniqueName, writeNewFile, stamp,
     ENTRY_FILES, findProjectRoot,
-    readProject, maybeWriteSnapshot, SessionWriter, makeHeader
+    snapshotTime, readProject, maybeWriteSnapshot, SessionWriter, makeHeader
   };
 
   global.CMStore = CMStore;
