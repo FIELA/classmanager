@@ -13,13 +13,14 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">班级助理<span>座次 · 抽取 · 记分 · 轨迹</span></div>
+    <div class="brand">班级助理<span>座次 · 分组过关 · 抽取 · 记分 · 轨迹</span></div>
     <div class="class-switch">
       <label for="class-select">班级</label>
       <select id="class-select" aria-label="切换班级"></select>
     </div>
     <nav class="tabs" aria-label="功能">
       <button type="button" data-tab="seating" class="active">座次</button>
+      <button type="button" data-tab="passage">分组过关</button>
       <button type="button" data-tab="scores">课堂表现</button>
       <button type="button" data-tab="student">学生轨迹</button>
       <button type="button" data-tab="settings">班级设置</button>
@@ -165,7 +166,43 @@
       </details>
     </section>
 
-    <!-- 2. 课堂表现 -->
+    <!-- 分组过关 -->
+    <section id="panel-passage" class="panel" hidden>
+      <article class="paper passage-paper">
+        <div class="paper-head">
+          <div class="paper-head-left">
+            <div class="passage-eyebrow">每周一次 · 当周有效</div>
+            <h2 id="passage-title">分组过关</h2>
+          </div>
+          <div class="paper-head-actions">
+            <label class="inline-field">查看周 <input type="date" id="passage-date"></label>
+            <label class="inline-field">版本 <select id="passage-version"></select></label>
+          </div>
+        </div>
+        <div class="passage-actionbar">
+          <div><b id="passage-status">本周尚未抽取</b><span id="passage-counts" class="muted"></span></div>
+          <div class="btn-row">
+            <button type="button" id="btn-passage-draw" class="primary">🎲 抽取分组</button>
+            <button type="button" id="btn-passage-finalize">★ 确认定版</button>
+          </div>
+        </div>
+        <div id="passage-result" class="passage-result"></div>
+      </article>
+      <details class="tools passage-settings" id="passage-settings">
+        <summary>固定人员设置</summary>
+        <div class="passage-settings-body">
+          <label class="field">课代表 <select id="passage-representative"></select></label>
+          <div id="passage-sample-list" class="passage-sample-list"></div>
+          <div class="btn-row"><span id="passage-sample-count" class="muted"></span><button type="button" id="btn-passage-config" class="primary">保存固定人员</button></div>
+        </div>
+      </details>
+      <details class="tools passage-history" id="passage-history">
+        <summary>查看历史版本</summary>
+        <div id="passage-history-list" class="passage-history-list"></div>
+      </details>
+    </section>
+
+    <!-- 课堂表现 -->
     <section id="panel-scores" class="panel" hidden>
       <article class="paper">
         <div class="paper-head">
@@ -258,10 +295,16 @@
           <h2>座位布局</h2>
           <div class="layout-fields">
             <label>共 <input id="layout-rows" type="number" min="1" max="20"> 排</label>
-            <label>每排 <input id="layout-cols" type="number" min="1" max="20"> 列</label>
+            <label>横向最多 <input id="layout-cols" type="number" min="1" max="20"> 列</label>
             <span id="layout-capacity" class="muted"></span>
           </div>
-          <p class="hint">点列与列之间的竖条设置或取消走廊；点座位设为“不可用”（再点恢复）。第 1 排靠近讲台。改布局只影响之后生成的座次。</p>
+          <div class="layout-pattern">
+            <span class="layout-pattern-title">按排设置座位组合</span>
+            <label>第 <input id="layout-from" type="number" min="1" max="20" value="1"> 排至第 <input id="layout-to" type="number" min="1" max="20" value="1"> 排</label>
+            <label>组合 <input id="layout-pattern" type="text" inputmode="text" placeholder="2+2+2" aria-label="座位组合"></label>
+            <button type="button" id="btn-apply-layout-pattern">应用到这些排</button>
+          </div>
+          <p class="hint">例如前几排填 2+2+2，最后一排填 3+2+3；组合会居中放置，改了列数后请重新套用。也可逐排点座位开关，点座位间的竖条设置该排走廊。第 1 排靠近讲台；新布局只影响之后生成的座次。</p>
           <div id="layout-preview" class="layout-preview"></div>
           <div class="btn-row">
             <button type="button" id="btn-save-layout" class="primary">保存布局</button>

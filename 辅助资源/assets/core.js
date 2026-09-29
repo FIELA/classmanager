@@ -131,7 +131,7 @@
   const mod = (a, n) => ((a % n) + n) % n;
 
   /* =========================================================
-     座位布局：rows 排 × cols 列；aisles = 走廊所在位置（第 a 列右侧）；disabled = 不可用座位
+     座位布局：rows 排 × cols 列；aisles 为默认走廊，rowAisles 为单排走廊；disabled 为不可用座位
      ========================================================= */
 
   const seatKey = (r, c) => `${r},${c}`;
@@ -156,6 +156,15 @@
     const aisles = Array.from(new Set((l.aisles || []).map(Number)))
       .filter(a => Number.isInteger(a) && a >= 1 && a < cols)
       .sort((a, b) => a - b);
+    const rowAisles = {};
+    const rawRows = l.rowAisles && typeof l.rowAisles === 'object' ? l.rowAisles : {};
+    Object.keys(rawRows).forEach(k => {
+      const r = Number(k);
+      if (!Number.isInteger(r) || r < 1 || r > rows || !Array.isArray(rawRows[k])) return;
+      rowAisles[r] = Array.from(new Set(rawRows[k].map(Number)))
+        .filter(a => Number.isInteger(a) && a >= 1 && a < cols)
+        .sort((a, b) => a - b);
+    });
     const disabled = Array.from(new Set((l.disabled || []).map(String)))
       .filter(k => {
         const p = parseSeatKey(k);
@@ -166,13 +175,43 @@
         const y = parseSeatKey(b);
         return (x.r - y.r) || (x.c - y.c);
       });
-    return { rows, cols, aisles, disabled };
+    return { rows, cols, aisles, rowAisles, disabled };
   }
 
-  // 布局签名：用于判断两张座次表是否同一布局
+  function aislesForRow(l, r) {
+    const n = normalizeLayout(l);
+    return Object.prototype.hasOwnProperty.call(n.rowAisles, r) ? n.rowAisles[r] : n.aisles;
+  }
+
+  // 将座位组合居中套用到指定排；例如 8 列中 2+2+2 占第 2～7 列
+  function applyRowPattern(l, first, last, parts) {
+    const n = normalizeLayout(l);
+    if (!Number.isInteger(first) || !Number.isInteger(last) || first < 1 || last > n.rows || first > last ||
+        !Array.isArray(parts) || !parts.length || parts.some(x => !Number.isInteger(x) || x < 1) ||
+        parts.reduce((a, b) => a + b, 0) > n.cols) throw new Error('排号或座位组合无效');
+    const total = parts.reduce((a, b) => a + b, 0);
+    const start = Math.floor((n.cols - total) / 2) + 1;
+    const off = new Set(n.disabled);
+    for (let r = first; r <= last; r++) {
+      for (let c = 1; c <= n.cols; c++) {
+        const key = seatKey(r, c);
+        if (c < start || c >= start + total) off.add(key);
+        else off.delete(key);
+      }
+      let c = start - 1;
+      n.rowAisles[r] = [];
+      parts.slice(0, -1).forEach(size => { c += size; n.rowAisles[r].push(c); });
+    }
+    n.disabled = Array.from(off);
+    return normalizeLayout(n);
+  }
+
+  // 布局签名：用于判断两张座次表是否同一布局（按每排实际的走廊比较，写法不同、效果相同的布局签名相同）
   function layoutKey(l) {
     const n = normalizeLayout(l);
-    return `${n.rows}x${n.cols}|${n.aisles.join('.')}|${n.disabled.join(';')}`;
+    const perRow = [];
+    for (let r = 1; r <= n.rows; r++) perRow.push(aislesForRow(n, r).join('.'));
+    return `${n.rows}x${n.cols}|${n.disabled.join(';')}|${perRow.join(';')}`;
   }
 
   function isSeatAvailable(l, r, c) {
@@ -202,18 +241,31 @@
   }
 
   // 走廊分隔出的“大组”（列号数组）
-  function groupsOf(l) {
+  function groupsOf(l, r) {
     const n = normalizeLayout(l);
+    const aisles = r ? aislesForRow(n, r) : n.aisles;
     const groups = [];
     let cur = [];
     for (let c = 1; c <= n.cols; c++) {
       cur.push(c);
-      if (n.aisles.indexOf(c) >= 0 || c === n.cols) {
+      if (aisles.indexOf(c) >= 0 || c === n.cols) {
         groups.push(cur);
         cur = [];
       }
     }
     return groups;
+  }
+
+  // 某排实际的座位范围：按排设置过的排（如套用了座位组合），两端连续的不可用座位不算该排的座位；其余排为整排
+  function rowSpan(n, r) {
+    let first = 1;
+    let last = n.cols;
+    if (Object.prototype.hasOwnProperty.call(n.rowAisles, r)) {
+      const dis = new Set(n.disabled);
+      while (first < last && dis.has(seatKey(r, first))) first++;
+      while (last > first && dis.has(seatKey(r, last))) last--;
+    }
+    return { first, last };
   }
 
   const ROW_ZONES = ['前', '中', '后'];
@@ -230,9 +282,9 @@
   }
 
   // 左/中/右：有两个以上大组时，最左一组为左、最右一组为右、其余为中；没有走廊时按列三等分
-  function colZone(l, c) {
+  function colZone(l, c, r) {
     const n = normalizeLayout(l);
-    const groups = groupsOf(n);
+    const groups = groupsOf(n, r);
     if (groups.length >= 2) {
       const gi = groups.findIndex(g => g.indexOf(c) >= 0);
       if (gi === 0) return '左';
@@ -246,7 +298,7 @@
   }
 
   function zoneOf(l, r, c) {
-    return { row: rowZone(l, r), col: colZone(l, c) };
+    return { row: rowZone(l, r), col: colZone(l, c, r) };
   }
 
   // 填座顺序：前排优先，同一排从中间向两侧（空座因此留在最后一排两侧）
@@ -258,17 +310,18 @@
     );
   }
 
-  // 同桌：同一大组内从左起两两成对
+  // 同桌：同一大组内从左起两两成对，两个座位都可用才算；按排设置过的排从该排实际的第一个座位算起
   function deskmatePairs(l) {
     const n = normalizeLayout(l);
     const dis = new Set(n.disabled);
     const pairs = [];
-    const groups = groupsOf(n);
     for (let r = 1; r <= n.rows; r++) {
-      for (const g of groups) {
-        for (let i = 0; i + 1 < g.length; i += 2) {
-          const a = { r, c: g[i] };
-          const b = { r, c: g[i + 1] };
+      const span = rowSpan(n, r);
+      for (const g of groupsOf(n, r)) {
+        const cols = g.filter(c => c >= span.first && c <= span.last);
+        for (let i = 0; i + 1 < cols.length; i += 2) {
+          const a = { r, c: cols[i] };
+          const b = { r, c: cols[i + 1] };
           if (!dis.has(seatKey(a.r, a.c)) && !dis.has(seatKey(b.r, b.c))) pairs.push([a, b]);
         }
       }
@@ -279,7 +332,8 @@
   // 显示用的列序列（含走廊）：学生版从左到右为第 1…N 列；教师版旋转 180°
   function displayColumns(l, view) {
     const n = normalizeLayout(l);
-    const aisles = new Set(n.aisles);
+    const aisles = new Set();
+    for (let r = 1; r <= n.rows; r++) aislesForRow(n, r).forEach(a => aisles.add(a));
     const out = [];
     if (view === 'teacher') {
       for (let c = n.cols; c >= 1; c--) {
@@ -520,8 +574,11 @@
   function defaultRotation(layout) {
     const n = normalizeLayout(layout);
     const rowShift = n.rows >= 3 ? Math.max(1, Math.round(n.rows / 3)) : (n.rows === 2 ? 1 : 0);
-    const groups = groupsOf(n);
-    const colShift = groups.length >= 2 ? groups[0].length : (n.cols >= 4 ? 2 : (n.cols >= 2 ? 1 : 0));
+    const groups = groupsOf(n, 1);
+    // 第一组的列数；第 1 排套用过座位组合时，两侧空出的位置不算
+    const span = rowSpan(n, 1);
+    const firstGroup = groups.map(g => g.filter(c => c >= span.first && c <= span.last)).find(g => g.length);
+    const colShift = groups.length >= 2 ? (firstGroup ? firstGroup.length : 1) : (n.cols >= 4 ? 2 : (n.cols >= 2 ? 1 : 0));
     return { rowShift, colShift, rowDir: 'back', colDir: 'right' };
   }
 
@@ -699,6 +756,39 @@
     return map;
   }
 
+  // 每周分组过关：抽中的五名样本既向课代表背诵，也各自带一组。
+  function validatePassageConfig(students, config) {
+    const active = activeStudents(students);
+    const ids = new Set(active.map(s => s.id));
+    const rep = config && config.representativeId;
+    const sample = config && config.sampleIds;
+    if (!rep || !ids.has(rep)) throw new Error('请先选择一名在班课代表');
+    if (!Array.isArray(sample) || sample.length < 5 || sample.length > 10 || new Set(sample).size !== sample.length) throw new Error('指定样本必须为 5～10 名不同学生');
+    if (sample.indexOf(rep) >= 0) throw new Error('课代表不能同时属于指定样本');
+    if (sample.some(id => !ids.has(id))) throw new Error('指定样本中有不在班的学生，请重新设置');
+    return active;
+  }
+
+  function drawPassageGroups(students, config, rng) {
+    const active = validatePassageConfig(students, config);
+    const rep = config.representativeId;
+    const sample = config.sampleIds;
+    if (active.length < 15) throw new Error('需要至少 15 名在班学生，才能保证五组各有组员');
+    rng = rng || defaultRng;
+    const shuffledSample = shuffle(sample, rng);
+    const representative = shuffledSample.slice(0, 5);
+    const leaders = representative;
+    const teacherCandidates = shuffle(active.map(s => s.id).filter(id => id !== rep), rng);
+    const teacher = [rep].concat(teacherCandidates.slice(0, 4));
+    const occupied = new Set(teacher.concat(leaders));
+    const members = shuffle(active.map(s => s.id).filter(id => !occupied.has(id)), rng);
+    const groups = leaders.map((leader, i) => ({
+      leader,
+      members: members.slice(Math.floor(i * members.length / 5), Math.floor((i + 1) * members.length / 5))
+    }));
+    return { teacher, representative, groups };
+  }
+
   const fmtScore = v => (v > 0 ? `+${v}` : `${v}`);
 
   const CMCore = {
@@ -707,7 +797,7 @@
     // 随机与编号
     mulberry32, cryptoRng, defaultRng, randomId, hash53, shuffle,
     // 布局
-    LIMITS, seatKey, parseSeatKey, normalizeLayout, layoutKey, isSeatAvailable, allSeats, capacity, groupsOf,
+    LIMITS, seatKey, parseSeatKey, normalizeLayout, aislesForRow, applyRowPattern, layoutKey, isSeatAvailable, allSeats, capacity, groupsOf,
     ROW_ZONES, rowZoneIndex, rowZone, colZone, zoneOf, fillOrder, deskmatePairs, displayColumns, displayRows,
     defaultLayoutFor, seatLabel,
     // 学生
@@ -716,7 +806,7 @@
     seatsToMap, mapToSeats, sanitizePins, randomSeating, scoreSeating, defaultRotation, rotateSeating, holdSeating,
     placeLeftovers, validateSeats,
     // 抽取
-    drawStudents,
+    drawStudents, validatePassageConfig, drawPassageGroups,
     // 课堂表现
     DEFAULT_SCORE_ITEMS, normalizeItems, summarizeScores, fmtScore
   };

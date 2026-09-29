@@ -470,6 +470,11 @@
       lbl.fill = fill('FFF5F8F6');
       lbl.border = BORDER;
       ws.getRow(pos.row).height = 36;
+      const rowAisles = core.aislesForRow(L, r);
+      cols.forEach((x, i) => {
+        if (x.type !== 'aisle' || rowAisles.indexOf(x.after) < 0) return;
+        ws.getCell(pos.row, 2 + i).fill = fill('FFE8F3ED');
+      });
       for (let c = 1; c <= L.cols; c++) {
         if (dis.has(core.seatKey(r, c))) continue;
         const p = seatCell(view, L, r, c);

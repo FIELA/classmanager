@@ -69,7 +69,7 @@ test('页面引用的脚本与样式都存在；app.js 用到的元素编号都�
   const dynamic = new Set(['opt-gender-pair', 'opt-row-shift', 'opt-row-dir', 'opt-col-shift', 'opt-col-dir']);
   const missing = [...used].filter(id => !ids.has(id) && !dynamic.has(id) && !id.startsWith('panel-'));
   assert.deepEqual(missing, [], '页面里缺少这些元素');
-  ['seating', 'scores', 'student', 'settings'].forEach(t => assert.ok(ids.has(`panel-${t}`)));
+  ['seating', 'passage', 'scores', 'student', 'settings'].forEach(t => assert.ok(ids.has(`panel-${t}`)));
 });
 
 test('浏览器存储名与旧项目不同，不会互相覆盖', () => {

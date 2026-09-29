@@ -33,6 +33,71 @@ test('布局规范化：限制范围、去掉越界走廊与无效座位', () =>
   assert.deepEqual(core.groupsOf(m), [[1, 2], [3, 4], [5, 6], [7, 8]]);
 });
 
+test('不同排可分别设置座位组合，前排 2+2+2、末排 3+2+3', () => {
+  let layout = { rows: 4, cols: 8, aisles: [2, 4, 6], disabled: [] };
+  layout = core.applyRowPattern(layout, 1, 3, [2, 2, 2]);
+  layout = core.applyRowPattern(layout, 4, 4, [3, 2, 3]);
+  assert.equal(core.capacity(layout), 26);
+  assert.deepEqual(core.aislesForRow(layout, 1), [3, 5]);
+  assert.deepEqual(core.aislesForRow(layout, 4), [3, 5]);
+  assert.deepEqual(core.allSeats(layout).filter(s => s.r === 1).map(s => s.c), [2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(core.allSeats(layout).filter(s => s.r === 4).map(s => s.c), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(core.groupsOf(layout, 1), [[1, 2, 3], [4, 5], [6, 7, 8]]);
+  assert.equal(core.colZone(layout, 4, 4), '中');
+  assert.equal(core.deskmatePairs(layout).filter(p => p[0].r === 1).length, 3);
+  assert.equal(core.deskmatePairs(layout).filter(p => p[0].r === 4).length, 3);
+  assert.equal(core.displayColumns(layout, 'student').filter(x => x.type === 'aisle').length, 2);
+  const students = fakeStudents(26);
+  assertValid(core.randomSeating(students, layout, [], {}, core.mulberry32(4)).seats, layout, students);
+  assertValid(core.scoreSeating(students, layout, []).seats, layout, students);
+});
+
+test('单排走廊可独立改变，旧布局仍保持原样', () => {
+  const legacy = { rows: 2, cols: 6, aisles: [2, 4] };
+  const changed = core.normalizeLayout({ rows: 2, cols: 6, aisles: [2, 4], rowAisles: { 2: [3] } });
+  assert.deepEqual(core.aislesForRow(changed, 1), [2, 4]);
+  assert.deepEqual(core.aislesForRow(changed, 2), [3]);
+  assert.notEqual(core.layoutKey(changed), core.layoutKey(legacy));
+  assert.equal(core.colZone(changed, 3, 1), '中');
+  assert.equal(core.colZone(changed, 3, 2), '左');
+  assert.deepEqual(core.displayColumns(changed, 'teacher').filter(x => x.type === 'aisle').map(x => x.after), [4, 3, 2]);
+  assert.deepEqual(core.groupsOf(legacy), [[1, 2], [3, 4], [5, 6]]);
+});
+
+test('同桌：同一组内从左起两两成对，不隔着不可用座位；按排设置过的排从该排实际的第一个座位算起', () => {
+  const text = layout => core.deskmatePairs(layout).map(p => `${p[0].r}:${p[0].c}-${p[1].c}`);
+  // 旧布局保持原来的配对：4 人一组，第 2 列或第 1 列不可用时，第 3、4 列仍是同桌
+  assert.deepEqual(text({ rows: 1, cols: 8, aisles: [4], disabled: ['1,2'] }), ['1:3-4', '1:5-6', '1:7-8']);
+  assert.deepEqual(text({ rows: 1, cols: 8, aisles: [4], disabled: ['1,1'] }), ['1:3-4', '1:5-6', '1:7-8']);
+  // 套用组合：两侧空出的位置不算座位
+  let layout = core.applyRowPattern({ rows: 2, cols: 8, aisles: [2, 4, 6] }, 1, 1, [2, 2, 2]);
+  layout = core.applyRowPattern(layout, 2, 2, [3, 2, 3]);
+  assert.deepEqual(text(layout), ['1:2-3', '1:4-5', '1:6-7', '2:1-2', '2:4-5', '2:6-7']);
+  // 组合的走廊恰好与默认走廊相同时也一样
+  assert.deepEqual(text(core.applyRowPattern({ rows: 1, cols: 8, aisles: [3, 5] }, 1, 1, [2, 2, 2])), ['1:2-3', '1:4-5', '1:6-7']);
+});
+
+test('布局写法不同但每排座位与走廊都相同，视为同一布局，可以继续轮换', () => {
+  const base = core.normalizeLayout({ rows: 6, cols: 8, aisles: [2, 4, 6] });
+  const same = core.applyRowPattern(base, 1, 6, [2, 2, 2, 2]);
+  assert.equal(core.layoutKey(same), core.layoutKey(base));
+  // 编辑器里把某排走廊点开再点掉
+  assert.equal(core.layoutKey({ rows: 6, cols: 8, aisles: [2, 4, 6], rowAisles: { 3: [6, 4, 2] } }), core.layoutKey(base));
+  // 每排都单独设成同样的走廊，与默认走廊就是这样的布局相同
+  assert.equal(core.layoutKey({ rows: 2, cols: 8, aisles: [2, 4, 6], rowAisles: { 1: [3, 5], 2: [3, 5] } }), core.layoutKey({ rows: 2, cols: 8, aisles: [3, 5] }));
+  assert.notEqual(core.layoutKey(core.applyRowPattern(base, 6, 6, [3, 2, 3])), core.layoutKey(base));
+  const students = fakeStudents(44);
+  const src = { seats: core.randomSeating(students, base, [], {}, core.mulberry32(3)).seats, layout: base };
+  assertValid(core.rotateSeating(src, students, same, []).seats, same, students);
+});
+
+test('默认左右轮换：旧布局按第一组的列数；第 1 排套用组合时不算两侧空位', () => {
+  assert.equal(core.defaultRotation({ rows: 6, cols: 8, aisles: [2, 4, 6], disabled: ['1,1'] }).colShift, 2);
+  assert.equal(core.defaultRotation({ rows: 6, cols: 8, aisles: [4], disabled: ['1,1'] }).colShift, 4);
+  assert.equal(core.defaultRotation(core.applyRowPattern({ rows: 6, cols: 8, aisles: [2, 4, 6] }, 1, 6, [2, 2, 2])).colShift, 2);
+  assert.equal(core.defaultRotation(core.applyRowPattern({ rows: 6, cols: 8, aisles: [2, 4, 6] }, 1, 6, [3, 3])).colShift, 3);
+});
+
 test('前中后区按排数三等分，左中右按大组', () => {
   const zones = rows => Array.from({ length: rows }, (_, i) => core.rowZone({ rows, cols: 4 }, i + 1)).join('');
   assert.equal(zones(6), '前前中中后后');

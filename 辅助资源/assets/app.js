@@ -42,7 +42,7 @@
     notices: [],
     saving: false,
     busy: false,
-    ui: { tab: 'seating', classId: null, view: 'student', version: null, mode: null, scoresWeek: null, scoresStudent: null, trajStudent: null },
+    ui: { tab: 'seating', classId: null, view: 'student', version: null, mode: null, scoresWeek: null, scoresStudent: null, trajStudent: null, passageWeek: null, passageVersion: null },
     draw: { n: 1, result: [], resultClass: null, noRepeat: false, drawn: new Map() },
     scoring: null,
     adjust: null,
@@ -52,6 +52,14 @@
     itemsDraft: null,
     importCands: []
   };
+  S.passageDraft = null;
+  S.passageConfigDraft = null;
+  S.passageDrawing = false;
+  S.passageDrawToken = 0;
+  S.passageAnimationResult = null;
+  S.passageStage = null;
+  S.passageTickTimer = null;
+  S.passageRevealTimer = null;
 
   /* =========================================================
      小工具
@@ -92,7 +100,7 @@
       if (u) {
         if (u.view === 'teacher' || u.view === 'student') S.ui.view = u.view;
         if (u.classId) S.ui.classId = u.classId;
-        if (['seating', 'scores', 'student', 'settings'].indexOf(u.tab) >= 0) S.ui.tab = u.tab;
+        if (['seating', 'passage', 'scores', 'student', 'settings'].indexOf(u.tab) >= 0) S.ui.tab = u.tab;
       }
     } catch (e) { /* 忽略 */ }
   }
@@ -469,9 +477,10 @@
     html += '<div></div>' + cols.map(x => (x.type === 'aisle' ? '<div></div>' : `<div class="col-head">第${x.c}列</div>`)).join('');
     for (const r of core.displayRows(L, view)) {
       const zi = core.rowZoneIndex(L.rows, r);
+      const rowAisles = core.aislesForRow(L, r);
       html += `<div class="row-label zone-${zi}"><b>第${r}排</b><span>${core.ROW_ZONES[zi]}区</span></div>`;
       for (const x of cols) {
-        if (x.type === 'aisle') { html += '<div class="aisle"></div>'; continue; }
+        if (x.type === 'aisle') { html += `<div class="aisle ${rowAisles.indexOf(x.after) >= 0 ? '' : 'idle'}"></div>`; continue; }
         const k = core.seatKey(r, x.c);
         html += dis.has(k) ? '<div class="seat void"></div>' : cellFn(r, x.c, seatMap.get(k) || null);
       }
@@ -520,10 +529,11 @@
     renderAlerts();
     const connected = !!S.root;
     $('welcome').hidden = connected;
-    ['seating', 'scores', 'student', 'settings'].forEach(t => { $('panel-' + t).hidden = !connected || S.ui.tab !== t; });
+    ['seating', 'passage', 'scores', 'student', 'settings'].forEach(t => { $('panel-' + t).hidden = !connected || S.ui.tab !== t; });
     document.querySelectorAll('.tabs [data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === S.ui.tab));
     if (!connected) { renderWelcome(); return; }
     if (S.ui.tab === 'seating') renderSeating();
+    else if (S.ui.tab === 'passage') renderPassage();
     else if (S.ui.tab === 'scores') renderScores();
     else if (S.ui.tab === 'student') renderStudent();
     else if (S.ui.tab === 'settings') renderSettings();
@@ -582,7 +592,9 @@
     const cls = S.root ? currentClass() : null;
     if (cls) {
       cls.conflicts.forEach(cf => {
-        const where = cf.kind === 'final' ? `${core.weekSpan(cf.key)} 的定版` : '座位布局';
+        const where = cf.kind === 'final' ? `${core.weekSpan(cf.key)} 的座次定版` :
+          cf.kind === 'passage' ? `${core.weekSpan(cf.key)} 的分组定版` :
+          cf.kind === 'passage-config' ? '分组固定人员设置' : '座位布局';
         items.push({
           level: 'warn',
           html: `⚠ ${esc(cls.name)} ${where}有两份各自保存的版本（可能是在两台电脑上分别做的），已采用较晚的一份。`,
@@ -609,6 +621,300 @@
     $('btn-welcome-connect').hidden = false;
     $('btn-welcome-connect').textContent = S.pendingRoot ? `📂 重新连接：${S.pendingRoot.name}` : '📂 连接文件夹';
     body.innerHTML = S.pendingRoot ? `<p>上次使用的是【<b>${esc(S.pendingRoot.name)}</b>】，点下面的按钮再授权一次即可继续。</p>` : '';
+  }
+
+  /* =========================================================
+     分组过关：固定人员、每周候选与定版
+     ========================================================= */
+
+  function passageConfigDraft(cls) {
+    const saved = cls.passageConfig;
+    if (!S.passageConfigDraft || S.passageConfigDraft.classId !== cls.id ||
+      (!S.passageConfigDraft.dirty && S.passageConfigDraft.sourceId !== (saved && saved.configId))) {
+      S.passageConfigDraft = {
+        classId: cls.id, sourceId: saved ? saved.configId : null, dirty: false,
+        representativeId: saved ? saved.representativeId : '',
+        sampleIds: saved ? saved.sampleIds.slice() : []
+      };
+    }
+    return S.passageConfigDraft;
+  }
+
+  function passageWeek() {
+    return S.ui.passageWeek || core.mondayOf(today());
+  }
+
+  function cancelPassageDraw() {
+    if (!S.passageDrawing) return;
+    ++S.passageDrawToken;
+    clearInterval(S.passageTickTimer);
+    clearTimeout(S.passageRevealTimer);
+    S.passageTickTimer = null;
+    S.passageRevealTimer = null;
+    S.passageDrawing = false;
+    S.passageAnimationResult = null;
+    S.passageStage = null;
+  }
+
+  function passageName(names, id) {
+    return esc(names.get(id) || '（已离班）');
+  }
+
+  function passageChips(ids, names, drawing) {
+    return ids.map(id => `<span class="passage-person">${drawing ? '抽取中' : passageName(names, id)}</span>`).join('');
+  }
+
+  function passageCards(r, names, stage) {
+    const teacherState = stage === 'teacher' ? 'rolling' : 'ready';
+    const representativeState = stage === 'teacher' || stage === 'teacher-ready' ? 'waiting' : stage === 'leaders' ? 'rolling' : 'ready';
+    const leaderState = representativeState;
+    const memberState = stage ? stage === 'members' ? 'rolling' : 'waiting' : 'ready';
+    const card = (index, kind, number, title, ids, state, leading, leaderReady) => {
+      const justRevealed = (stage === 'teacher-ready' && index === 0) || (stage === 'leaders-ready' && index === 1);
+      let classes = '';
+      if (state === 'rolling') classes = ' is-drawing';
+      else if (leading) classes = ' is-leading';
+      else if (state === 'waiting' && !leaderReady) classes = ' is-waiting';
+      else if (justRevealed) classes = ' is-revealed';
+      if (stage === 'leaders-ready' && leaderReady) classes += ' is-leader-revealed';
+      const people = state === 'waiting' ? '<div class="passage-pending">待抽取</div>' :
+        `<div class="passage-people"${state === 'rolling' ? ' aria-hidden="true"' : ''}>${passageChips(ids, names, state === 'rolling')}</div>`;
+      return `<div class="passage-card ${kind}${classes}" data-passage-card="${index}">
+        <div class="passage-card-head"><span class="passage-number">${number}</span><h3${leading ? ' aria-hidden="true"' : ''}>${title}</h3><b>${ids.length} 人</b></div>
+        ${people}
+      </div>`;
+    };
+    const repTitle = `向 ${passageName(names, r.teacher[0])} 背诵`;
+    return `<div class="passage-primary-groups">
+        ${card(0, 'teacher', '01', '向老师背诵', r.teacher, teacherState, false, false)}
+        ${card(1, 'representative', '02', repTitle, r.representative, representativeState, false, false)}
+      </div>
+      <div class="passage-groups-heading"><h3>向组长背诵</h3></div>
+      <div class="passage-groups">${r.groups.map((g, i) => card(i + 2, 'group', i + 1,
+        leaderState === 'ready' ? `${passageName(names, g.leader)} 组` : `第 ${i + 1} 组`,
+        g.members, memberState, leaderState === 'rolling', leaderState === 'ready')).join('')}</div>`;
+  }
+
+  function renderPassage() {
+    const cls = currentClass();
+    const resultBox = $('passage-result');
+    if (!cls) {
+      $('passage-title').textContent = '分组过关';
+      resultBox.innerHTML = '<div class="passage-empty">还没有班级，请先在班级设置中创建班级。</div>';
+      $('passage-sample-list').innerHTML = '';
+      $('passage-history-list').innerHTML = '';
+      return;
+    }
+    const week = passageWeek();
+    const active = store.studentsOf(cls);
+    const names = studentMaps(cls).names;
+    const config = passageConfigDraft(cls);
+    const current = cls.passageFinals.get(week);
+    const versions = cls.passageHistory.filter(r => r.week === week).slice().reverse();
+    if (S.ui.passageVersion && !versions.some(r => r.finalId === S.ui.passageVersion)) S.ui.passageVersion = null;
+    const draft = S.passageDraft && S.passageDraft.classId === cls.id && S.passageDraft.week === week && !S.ui.passageVersion ? S.passageDraft : null;
+    const selected = S.ui.passageVersion ? versions.find(r => r.finalId === S.ui.passageVersion) : current;
+    const shown = S.passageDrawing ? null : draft || selected;
+    const displayResult = S.passageDrawing ? S.passageAnimationResult : shown ? shown.result : null;
+    const repId = displayResult ? displayResult.teacher[0] : cls.passageConfig && cls.passageConfig.representativeId;
+    const repName = repId ? names.get(repId) || '（已离班）' : '';
+
+    const weekWord = week === core.mondayOf(today()) ? '本周' : '该周';
+    $('passage-title').textContent = `分组过关 · ${cls.name} · ${core.weekSpan(week)}`;
+    $('passage-date').value = week;
+    $('passage-version').innerHTML = `<option value="">${weekWord}${current ? '当前定版' : '暂无定版'}</option>` +
+      versions.map((r, i) => `<option value="${esc(r.finalId)}" ${S.ui.passageVersion === r.finalId ? 'selected' : ''}>历史第 ${versions.length - i} 版${current && current.finalId === r.finalId ? '（当前）' : ''}</option>`).join('');
+    $('passage-version').disabled = S.passageDrawing || !versions.length;
+    const stageStatus = {
+      teacher: '第 1 步 · 正在确定向老师背诵名单',
+      'teacher-ready': '第 1 步 · 向老师背诵名单已确定',
+      leaders: `第 2 步 · 正在确定向 ${repName} 背诵名单与组长`,
+      'leaders-ready': `第 2 步 · 向 ${repName} 背诵名单与组长已确定`,
+      members: '第 3 步 · 正在分配组员'
+    };
+    $('passage-status').textContent = S.passageDrawing ? stageStatus[S.passageStage] : draft ? '候选结果 · 待定版' : selected ? (current && selected.finalId === current.finalId ? `${weekWord}已定版` : '历史版本') : `${weekWord}尚未抽取`;
+    if (shown) {
+      const r = shown.result;
+      const members = r.groups.reduce((a, g) => a.concat(g.members), []);
+      const total = new Set(r.teacher.concat(r.representative, members)).size;
+      const dualRoles = r.teacher.filter(id => r.representative.indexOf(id) >= 0).length;
+      $('passage-counts').textContent = ` · ${total} 人 · 5 组${dualRoles ? ` · ${dualRoles} 人兼任` : ''}`;
+    } else $('passage-counts').textContent = '';
+    $('btn-passage-draw').disabled = S.passageDrawing || !cls.passageConfig;
+    $('btn-passage-finalize').disabled = S.passageDrawing || !draft;
+    if (S.passageDrawing) {
+      resultBox.innerHTML = passageCards(S.passageAnimationResult, names, S.passageStage);
+    } else if (!shown) {
+      resultBox.innerHTML = '<div class="passage-empty"><span class="empty-mark">○</span><b>这一周还没有抽取结果</b><span>设置固定人员后，点击“抽取分组”生成候选结果。</span></div>';
+    } else {
+      resultBox.innerHTML = passageCards(shown.result, names, null);
+    }
+
+    // 已选的课代表或样本离班后仍列出并标“离班”，老师才能改选或取消勾选
+    const activeIds = new Set(active.map(s => s.id));
+    const goneLabel = id => `${passageName(names, id)}${names.has(id) ? '（离班）' : ''}`;
+    const repGone = !!config.representativeId && !activeIds.has(config.representativeId);
+    const goneSamples = config.sampleIds.filter(id => !activeIds.has(id));
+    $('passage-representative').innerHTML = '<option value="">请选择课代表</option>' +
+      (repGone ? `<option value="${esc(config.representativeId)}" selected>${goneLabel(config.representativeId)}</option>` : '') +
+      active.map(s => `<option value="${esc(s.id)}" ${config.representativeId === s.id ? 'selected' : ''}>${esc(names.get(s.id) || s.name)}</option>`).join('');
+    $('passage-sample-list').innerHTML = goneSamples.map(id =>
+      `<label class="passage-sample"><input type="checkbox" value="${esc(id)}" checked><span>${goneLabel(id)}</span></label>`).join('') +
+      active.filter(s => s.id !== config.representativeId).map(s =>
+        `<label class="passage-sample"><input type="checkbox" value="${esc(s.id)}" ${config.sampleIds.indexOf(s.id) >= 0 ? 'checked' : ''}><span>${esc(names.get(s.id) || s.name)}</span></label>`).join('');
+    const warns = [];
+    if (repGone) warns.push('课代表已离班，请重新选择');
+    if (goneSamples.length) warns.push(`${goneSamples.length} 名样本已离班，请取消勾选`);
+    $('passage-sample-count').innerHTML = `已选 ${config.sampleIds.length} 人（需 5～10 人）${warns.length ? ` · <span class="warn-text">${warns.join('；')}</span>` : ''}`;
+    $('passage-history-list').innerHTML = cls.passageHistory.length ? cls.passageHistory.slice().reverse().map(r =>
+      `<button type="button" class="passage-history-item" data-week="${esc(r.week)}" data-version="${esc(r.finalId)}"><b>${esc(core.weekSpan(r.week))}</b><span>${r.week}</span><span>${cls.passageFinals.get(r.week) === r ? '当前定版' : '历史定版'}</span><strong>查看 →</strong></button>`).join('') : '<p class="hint">还没有定版历史。</p>';
+  }
+
+  function savePassageConfig() {
+    const cls = currentClass();
+    if (!cls) return;
+    cancelPassageDraw();
+    const d = passageConfigDraft(cls);
+    try { core.validatePassageConfig(store.studentsOf(cls), d); }
+    catch (e) { showError(e.message); return; }
+    commit('passage.config.set', {
+      classId: cls.id, configId: 'pc_' + core.randomId(10),
+      config: { representativeId: d.representativeId, sampleIds: d.sampleIds.slice() },
+      base: d.sourceId
+    });
+    S.passageConfigDraft = null;
+    S.passageDraft = null;
+    renderAll();
+    toast('固定人员已保存');
+  }
+
+  function drawPassage() {
+    const cls = currentClass();
+    if (!cls || !cls.passageConfig || S.passageDrawing) return;
+    // 固定人员失效（如有人离班）时展开设置，方便老师直接改
+    try { core.validatePassageConfig(store.studentsOf(cls), cls.passageConfig); }
+    catch (e) { $('passage-settings').open = true; showError(e.message); return; }
+    let result;
+    try { result = core.drawPassageGroups(store.studentsOf(cls), cls.passageConfig); }
+    catch (e) { showError(e.message); return; }
+    const week = passageWeek();
+    S.ui.passageVersion = null;
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced) {
+      S.passageDraft = { classId: cls.id, week, result };
+      renderPassage();
+      toast('候选分组已抽出，核对后点击“确认定版”');
+      return;
+    }
+    S.passageDrawing = true;
+    S.passageAnimationResult = result;
+    const token = ++S.passageDrawToken;
+    const names = studentMaps(cls).names;
+    const rep = cls.passageConfig.representativeId;
+    const allIds = store.studentsOf(cls).map(s => s.id);
+    const occupied = new Set(result.teacher.concat(result.representative));
+    const memberPool = allIds.filter(id => !occupied.has(id));
+    const teacherPool = allIds.filter(id => id !== rep);
+    const samplePool = cls.passageConfig.sampleIds;
+    const spin = () => {
+      if (token !== S.passageDrawToken) return;
+      const cards = $('passage-result').querySelectorAll('[data-passage-card]');
+      if (S.passageStage === 'teacher') {
+        const picks = core.shuffle(teacherPool);
+        cards[0].querySelectorAll('.passage-person').forEach((person, slot) => {
+          const id = slot === 0 ? rep : picks[slot - 1];
+          person.textContent = names.get(id) || '（已离班）';
+        });
+      } else if (S.passageStage === 'leaders') {
+        const picks = core.shuffle(samplePool).slice(0, 5);
+        cards[1].querySelectorAll('.passage-person').forEach((person, slot) => {
+          person.textContent = names.get(picks[slot]) || '（已离班）';
+        });
+        result.groups.forEach((g, i) => {
+          cards[i + 2].querySelector('h3').textContent = `${names.get(picks[i]) || '（已离班）'} 组`;
+        });
+      } else if (S.passageStage === 'members') {
+        result.groups.forEach((g, i) => {
+          const picks = core.shuffle(memberPool);
+          cards[i + 2].querySelectorAll('.passage-person').forEach((person, slot) => {
+            person.textContent = names.get(picks[slot]) || '（已离班）';
+          });
+        });
+      }
+    };
+    const setStage = stage => {
+      clearInterval(S.passageTickTimer);
+      S.passageTickTimer = null;
+      S.passageStage = stage;
+      renderPassage();
+      if (stage === 'teacher' || stage === 'leaders' || stage === 'members') {
+        spin();
+        S.passageTickTimer = setInterval(spin, 95);
+      }
+    };
+    const finish = () => {
+      if (token !== S.passageDrawToken) return;
+      clearInterval(S.passageTickTimer);
+      S.passageTickTimer = null;
+      S.passageRevealTimer = null;
+      S.passageDrawing = false;
+      S.passageAnimationResult = null;
+      S.passageStage = null;
+      S.passageDraft = { classId: cls.id, week, result };
+      renderPassage();
+      toast('候选分组已抽出，核对后点击“确认定版”');
+    };
+    let groupIndex = 0;
+    const revealGroup = () => {
+      if (token !== S.passageDrawToken) return;
+      const card = $('passage-result').querySelector(`[data-passage-card="${groupIndex + 2}"]`);
+      if (card) {
+        card.classList.remove('is-drawing');
+        card.classList.add('is-revealed');
+        const people = card.querySelector('.passage-people');
+        people.innerHTML = passageChips(result.groups[groupIndex].members, names, false);
+        people.removeAttribute('aria-hidden');
+      }
+      groupIndex++;
+      S.passageRevealTimer = setTimeout(groupIndex < result.groups.length ? revealGroup : finish, groupIndex < result.groups.length ? 130 : 250);
+    };
+    const phases = [
+      { stage: 'teacher', ms: 800 },
+      { stage: 'teacher-ready', ms: 280 },
+      { stage: 'leaders', ms: 800 },
+      { stage: 'leaders-ready', ms: 300 },
+      { stage: 'members', ms: 950 }
+    ];
+    let phaseIndex = 0;
+    const advance = () => {
+      if (token !== S.passageDrawToken) return;
+      if (phaseIndex === phases.length) {
+        clearInterval(S.passageTickTimer);
+        S.passageTickTimer = null;
+        revealGroup();
+        return;
+      }
+      const phase = phases[phaseIndex++];
+      setStage(phase.stage);
+      S.passageRevealTimer = setTimeout(advance, phase.ms);
+    };
+    advance();
+  }
+
+  function finalizePassage() {
+    const cls = currentClass();
+    const draft = S.passageDraft;
+    if (!cls || !draft || draft.classId !== cls.id || draft.week !== passageWeek()) return;
+    const prev = cls.passageFinals.get(draft.week);
+    if (prev && !confirm(`${core.weekSpan(draft.week)} 已有定版。确定用当前候选结果重新定版吗？旧版仍可在历史中查看。`)) return;
+    commit('passage.final.set', {
+      classId: cls.id, finalId: 'pf_' + core.randomId(10), week: draft.week,
+      result: draft.result, base: prev ? prev.finalId : null
+    });
+    S.passageDraft = null;
+    S.ui.passageVersion = null;
+    renderAll();
+    toast(`已定版 ${core.weekSpan(draft.week)} 的分组`);
   }
 
   /* =========================================================
@@ -1480,7 +1786,7 @@
     const used = rows.filter(x => x.seat && !x.future);
     const cnt = (list, fn) => list.reduce((m, x) => { const k = fn(x); m[k] = (m[k] || 0) + 1; return m; }, {});
     const rz = cnt(used, x => core.rowZone(x.f.layout, x.seat[0]));
-    const cz = cnt(used, x => core.colZone(x.f.layout, x.seat[1]));
+    const cz = cnt(used, x => core.colZone(x.f.layout, x.seat[1], x.seat[0]));
     $('traj-stats').innerHTML = `<span><b>${used.length}</b>次定版座位</span>
       <span>前区 <b>${rz['前'] || 0}</b> · 中区 <b>${rz['中'] || 0}</b> · 后区 <b>${rz['后'] || 0}</b></span>
       <span>左侧 <b>${cz['左'] || 0}</b> · 中间 <b>${cz['中'] || 0}</b> · 右侧 <b>${cz['右'] || 0}</b></span>
@@ -1488,7 +1794,7 @@
     $('traj-seats').innerHTML = rows.length ? rows.slice().reverse().map(x => `<tr class="${x.future ? 'future' : ''}">
       <td>${esc(x.f.date)}${x.future ? '（未生效）' : ''}</td><td>${core.weekSpan(x.f.date)}</td><td>${esc(MODE_TEXT[x.f.mode] || x.f.mode)}</td>
       <td>${x.seat ? core.seatLabel(x.seat[0], x.seat[1]) : '（不在这张表上）'}</td>
-      <td>${x.seat ? core.rowZone(x.f.layout, x.seat[0]) + '区' : ''}</td><td>${x.seat ? core.colZone(x.f.layout, x.seat[1]) : ''}</td></tr>`).join('')
+      <td>${x.seat ? core.rowZone(x.f.layout, x.seat[0]) + '区' : ''}</td><td>${x.seat ? core.colZone(x.f.layout, x.seat[1], x.seat[0]) : ''}</td></tr>`).join('')
       : '<tr><td colspan="6" class="muted">还没有定版座次</td></tr>';
     const scores = store.scoresOf(S.st, cls.id).filter(r => r.studentId === s.id).sort((a, b) => (b.time || b.date).localeCompare(a.time || a.date));
     const x = core.summarizeScores(scores).get(s.id) || { bonusSum: 0, bonusCount: 0, penaltySum: 0, penaltyCount: 0, net: 0 };
@@ -1575,6 +1881,10 @@
     const L = layoutDraft(cls);
     $('layout-rows').value = L.rows;
     $('layout-cols').value = L.cols;
+    $('layout-from').max = L.rows;
+    $('layout-to').max = L.rows;
+    if (Number($('layout-from').value) > L.rows) $('layout-from').value = L.rows;
+    if (Number($('layout-to').value) > L.rows) $('layout-to').value = L.rows;
     const cap = core.capacity(L);
     const n = store.studentsOf(cls).length;
     const changed = core.layoutKey(L) !== core.layoutKey(store.layoutOf(cls));
@@ -1582,19 +1892,20 @@
     const tmpl = ['44px'];
     for (let c = 1; c <= L.cols; c++) {
       tmpl.push('minmax(40px, 1fr)');
-      if (c < L.cols) tmpl.push(L.aisles.indexOf(c) >= 0 ? '22px' : '10px');
+      if (c < L.cols) tmpl.push(Array.from({ length: L.rows }, (_, i) => core.aislesForRow(L, i + 1).indexOf(c) >= 0).some(Boolean) ? '22px' : '10px');
     }
     const col = c => 2 + (c - 1) * 2;
     let html = `<div class="lp-grid" style="grid-template-columns:${tmpl.join(' ')}"><div class="lp-stage" style="grid-row:1; grid-column: 2 / -1">讲台</div>`;
-    for (let c = 1; c < L.cols; c++) {
-      const on = L.aisles.indexOf(c) >= 0;
-      html += `<div class="lp-gap ${on ? 'on' : ''}" data-gap="${c}" style="grid-row: 2 / span ${L.rows}; grid-column:${col(c) + 1}" title="第${c}列与第${c + 1}列之间：点此${on ? '取消' : '设为'}走廊"></div>`;
-    }
     for (let r = 1; r <= L.rows; r++) {
       html += `<div class="lp-row" style="grid-row:${r + 1}; grid-column:1">第${r}排</div>`;
+      const rowAisles = core.aislesForRow(L, r);
       for (let c = 1; c <= L.cols; c++) {
         const off = L.disabled.indexOf(core.seatKey(r, c)) >= 0;
         html += `<div class="lp-seat ${off ? 'off' : ''}" data-r="${r}" data-c="${c}" style="grid-row:${r + 1}; grid-column:${col(c)}" title="第${r}排第${c}列：点此${off ? '恢复' : '设为不可用'}">${off ? '×' : `${c}`}</div>`;
+        if (c < L.cols) {
+          const on = rowAisles.indexOf(c) >= 0;
+          html += `<div class="lp-gap ${on ? 'on' : ''}" data-r="${r}" data-gap="${c}" style="grid-row:${r + 1}; grid-column:${col(c) + 1}" title="第${r}排第${c}列后：点此${on ? '取消' : '设置'}走廊"></div>`;
+        }
       }
     }
     box.innerHTML = html + '</div>';
@@ -1608,7 +1919,9 @@
     const seat = e.target.closest('.lp-seat');
     if (gap) {
       const a = Number(gap.dataset.gap);
-      L.aisles = L.aisles.indexOf(a) >= 0 ? L.aisles.filter(x => x !== a) : L.aisles.concat([a]);
+      const r = Number(gap.dataset.r);
+      const aisles = core.aislesForRow(L, r);
+      L.rowAisles[r] = aisles.indexOf(a) >= 0 ? aisles.filter(x => x !== a) : aisles.concat([a]);
     } else if (seat) {
       const k = core.seatKey(Number(seat.dataset.r), Number(seat.dataset.c));
       L.disabled = L.disabled.indexOf(k) >= 0 ? L.disabled.filter(x => x !== k) : L.disabled.concat([k]);
@@ -1621,8 +1934,22 @@
     const cls = currentClass();
     if (!cls) return;
     const L = layoutDraft(cls);
-    S.layoutDraft.layout = core.normalizeLayout({ rows: $('layout-rows').value, cols: $('layout-cols').value, aisles: L.aisles, disabled: L.disabled });
+    S.layoutDraft.layout = core.normalizeLayout({ rows: $('layout-rows').value, cols: $('layout-cols').value, aisles: L.aisles, rowAisles: L.rowAisles, disabled: L.disabled });
     renderLayoutEditor(cls);
+  }
+
+  function onLayoutPattern() {
+    const cls = currentClass();
+    if (!cls) return;
+    const first = Number($('layout-from').value);
+    const last = Number($('layout-to').value);
+    const pattern = $('layout-pattern').value.trim();
+    if (!/^\d+(?:\s*[+＋,，、]\s*\d+)*$/.test(pattern)) { showError('座位组合请按 2+2+2 这样的格式填写'); return; }
+    const parts = pattern.split(/\s*[+＋,，、]\s*/).map(Number);
+    try {
+      S.layoutDraft.layout = core.applyRowPattern(layoutDraft(cls), first, last, parts);
+      renderLayoutEditor(cls);
+    } catch (err) { showError(err.message); }
   }
 
   function saveLayout() {
@@ -1728,10 +2055,14 @@
 
   function switchClass(id) {
     if (S.ui.mode) exitMode(true);
+    cancelPassageDraw();
     S.ui.classId = id;
     S.ui.version = null;
     S.ui.scoresStudent = null;
     S.ui.trajStudent = null;
+    S.ui.passageVersion = null;
+    S.passageDraft = null;
+    S.passageConfigDraft = null;
     S.layoutDraft = null;
     clearDraw();
     renderAll();
@@ -1882,6 +2213,11 @@
       if (cf.kind === 'final') {
         const l = cf.loser;
         commit('final.set', { classId: cls.id, finalId: 'f_' + core.randomId(10), date: l.date, seats: l.seats, layout: l.layout, mode: l.mode, meta: l.meta || {}, base: cf.winnerId });
+      } else if (cf.kind === 'passage') {
+        commit('passage.final.set', { classId: cls.id, finalId: 'pf_' + core.randomId(10), week: cf.key, result: cf.loser.result, base: cf.winnerId });
+      } else if (cf.kind === 'passage-config') {
+        commit('passage.config.set', { classId: cls.id, configId: 'pc_' + core.randomId(10), config: { representativeId: cf.loser.representativeId, sampleIds: cf.loser.sampleIds }, base: cf.winnerId });
+        S.passageConfigDraft = null;
       } else {
         commit('layout.set', { classId: cls.id, layout: cf.loser.layout, layoutId: 'l_' + core.randomId(8), base: cf.winnerId });
       }
@@ -1911,6 +2247,7 @@
     document.querySelectorAll('.tabs [data-tab]').forEach(b => b.addEventListener('click', () => {
       if (S.ui.mode === 'adjust' || S.ui.mode === 'select') { toast('请先完成或取消当前的微调/选座'); return; }
       if (S.ui.mode) exitMode(true);
+      cancelPassageDraw();
       S.ui.tab = b.dataset.tab;
       renderAll();
     }));
@@ -1928,6 +2265,50 @@
     $('alerts').addEventListener('click', e => {
       const b = e.target.closest('[data-alert]');
       if (b) onAlert(b.dataset.alert, b.dataset.arg);
+    });
+
+    // 分组过关页
+    $('passage-date').addEventListener('change', e => {
+      if (!core.isISODate(e.target.value)) { showError('请选择有效日期'); return; }
+      cancelPassageDraw();
+      S.ui.passageWeek = core.mondayOf(e.target.value);
+      S.ui.passageVersion = null;
+      renderPassage();
+    });
+    $('passage-version').addEventListener('change', e => { S.ui.passageVersion = e.target.value || null; renderPassage(); });
+    $('passage-representative').addEventListener('change', e => {
+      cancelPassageDraw();
+      const d = passageConfigDraft(currentClass());
+      d.representativeId = e.target.value;
+      d.sampleIds = d.sampleIds.filter(id => id !== d.representativeId);
+      d.dirty = true;
+      renderPassage();
+    });
+    $('passage-sample-list').addEventListener('change', e => {
+      if (!e.target.matches('input[type="checkbox"]')) return;
+      const d = passageConfigDraft(currentClass());
+      if (e.target.checked) {
+        if (d.sampleIds.length >= 10) { e.target.checked = false; showError('指定样本最多 10 人'); return; }
+        cancelPassageDraw();
+        d.sampleIds.push(e.target.value);
+      } else {
+        cancelPassageDraw();
+        d.sampleIds = d.sampleIds.filter(id => id !== e.target.value);
+      }
+      d.dirty = true;
+      renderPassage();
+    });
+    $('btn-passage-config').addEventListener('click', savePassageConfig);
+    $('btn-passage-draw').addEventListener('click', drawPassage);
+    $('btn-passage-finalize').addEventListener('click', finalizePassage);
+    $('passage-history-list').addEventListener('click', e => {
+      const item = e.target.closest('[data-week][data-version]');
+      if (!item) return;
+      cancelPassageDraw();
+      S.ui.passageWeek = item.dataset.week;
+      S.ui.passageVersion = item.dataset.version;
+      renderPassage();
+      $('panel-passage').scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
 
     // 座次页
@@ -2017,6 +2398,7 @@
     $('layout-preview').addEventListener('click', onLayoutClick);
     $('layout-rows').addEventListener('change', onLayoutSize);
     $('layout-cols').addEventListener('change', onLayoutSize);
+    $('btn-apply-layout-pattern').addEventListener('click', onLayoutPattern);
     $('btn-save-layout').addEventListener('click', saveLayout);
     $('btn-reset-layout').addEventListener('click', () => { S.layoutDraft = null; renderSettings(); });
     $('items-body').addEventListener('change', onItemsInput);

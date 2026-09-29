@@ -118,6 +118,9 @@
       pins: [],
       draft: null,
       finals: new Map(),
+      passageConfig: null,
+      passageFinals: new Map(),
+      passageHistory: [],
       conflicts: []
     };
   }
@@ -245,6 +248,49 @@
           t: op.t,
           session: op.s
         });
+        return true;
+      }
+      case 'passage.config.set': {
+        if (!cls || !op.config || !op.configId) return false;
+        const ids = op.config.sampleIds;
+        if (!str(op.config.representativeId) || !Array.isArray(ids) || ids.length < 5 || ids.length > 10 ||
+          new Set(ids).size !== ids.length || ids.some(id => !str(id)) || ids.indexOf(op.config.representativeId) >= 0) return false;
+        const prev = cls.passageConfig;
+        if (prev && op.base !== prev.configId && op.configId !== prev.configId) {
+          dropConflict(cls, 'passage-config', 'config');
+          cls.conflicts.push({ kind: 'passage-config', key: 'config', winnerId: op.configId, loser: prev, t: op.t });
+        } else if (prev) dropConflict(cls, 'passage-config', 'config');
+        cls.passageConfig = { configId: op.configId, representativeId: op.config.representativeId, sampleIds: ids.slice(), t: op.t };
+        return true;
+      }
+      case 'passage.final.set': {
+        if (!cls || !op.finalId || !core.isISODate(op.week) || core.mondayOf(op.week) !== op.week || !op.result) return false;
+        const r = op.result;
+        if (!Array.isArray(r.teacher) || !Array.isArray(r.representative) || !Array.isArray(r.groups) ||
+          r.teacher.length !== 5 || r.representative.length !== 5 || r.groups.length !== 5 ||
+          r.groups.some(g => !g || !str(g.leader) || !Array.isArray(g.members) || g.members.length < 1)) return false;
+        const leaders = r.groups.map(g => g.leader);
+        const members = r.groups.reduce((a, g) => a.concat(g.members), []);
+        const all = r.teacher.concat(r.representative, members);
+        const unique = new Set(all);
+        if (unique.size < 15 || all.some(id => !str(id)) ||
+          new Set(r.teacher).size !== 5 || new Set(r.representative).size !== 5 ||
+          new Set(members).size !== members.length || members.some(id => r.teacher.indexOf(id) >= 0 || r.representative.indexOf(id) >= 0) ||
+          r.representative.indexOf(r.teacher[0]) >= 0 ||
+          new Set(leaders).size !== 5 || leaders.some(id => r.representative.indexOf(id) < 0)) return false;
+        const prev = cls.passageFinals.get(op.week);
+        if (prev && op.finalId !== prev.finalId && op.base !== prev.finalId) {
+          dropConflict(cls, 'passage', op.week);
+          cls.conflicts.push({ kind: 'passage', key: op.week, winnerId: op.finalId, loser: prev, t: op.t });
+        } else if (prev) dropConflict(cls, 'passage', op.week);
+        const rec = {
+          finalId: op.finalId, week: op.week, result: {
+            teacher: r.teacher.slice(), representative: r.representative.slice(),
+            groups: r.groups.map(g => ({ leader: g.leader, members: g.members.slice() }))
+          }, base: op.base || null, t: op.t, session: op.s
+        };
+        cls.passageFinals.set(op.week, rec);
+        cls.passageHistory.push(rec);
         return true;
       }
       case 'conflict.ack':

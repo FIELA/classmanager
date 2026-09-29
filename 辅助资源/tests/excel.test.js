@@ -179,6 +179,28 @@ test('座次表导出：学生版与教师版互为 180° 旋转；学生版对�
   assert.match(bad.warnings.join(''), /不能增删学生/);
 });
 
+test('混合排布局导出后座位对应不变，修改可读回', async () => {
+  const { cls, students } = makeClass(14);
+  let layout = core.applyRowPattern({ rows: 2, cols: 8, aisles: [2, 4, 6] }, 1, 1, [2, 2, 2]);
+  layout = core.applyRowPattern(layout, 2, 2, [3, 2, 3]);
+  const seats = core.randomSeating(students, layout, [], {}, core.mulberry32(7)).seats;
+  const wb = await roundTrip(await excel.createSeatingWorkbook(cls, { finalId: 'f2', date: '2026-09-28', seats, layout, mode: 'random' }, students, { exportId: 'e-mixed' }));
+  const ws = wb.getWorksheet('学生版');
+  const byId = new Map(students.map(s => [s.id, s]));
+  seats.forEach(([r, c, sid]) => {
+    const p = excel.seatCell('student', layout, r, c);
+    assert.equal(excel.cellText(ws.getCell(p.row, p.col).value), byId.get(sid).name);
+  });
+  const a = excel.seatCell('student', layout, seats[0][0], seats[0][1]);
+  const b = excel.seatCell('student', layout, seats[1][0], seats[1][1]);
+  const name = ws.getCell(a.row, a.col).value;
+  ws.getCell(a.row, a.col).value = ws.getCell(b.row, b.col).value;
+  ws.getCell(b.row, b.col).value = name;
+  const result = await excel.readExportEdits(await wb.xlsx.writeBuffer(), 'mixed.xlsx', ctxFor(cls, students));
+  assert.equal(result.ops.length, 1);
+  assert.deepEqual(result.ops[0].layout.rowAisles, layout.rowAisles);
+});
+
 test('课堂表现导出：删除、修改、新增、改姓名都能读回；旧表不会把网页里的新改动改回去', async () => {
   const { cls, students } = makeClass(4);
   const records = [
